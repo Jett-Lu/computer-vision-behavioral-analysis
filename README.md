@@ -1,8 +1,9 @@
-# Computer Vision Predictive Surveillance System
+# Real-Time Computer Vision & Behavioral Analysis System
 
-A real-time computer vision system that combines multi-person tracking, pose
-estimation, identity recognition, facial-expression context, gesture analysis,
-activity recognition, and independent temporal state management.
+A real-time computer vision system for multi-person tracking, pose estimation,
+activity recognition, and temporal behavioral analysis, with optional identity
+recognition and facial-expression context. Each person is tracked using independent
+temporal state, allowing movement and gesture patterns to be evaluated over time.
 
 The project was developed as an applied artificial intelligence portfolio
 piece to explore how multiple computer vision models can be integrated into a
@@ -299,7 +300,7 @@ pipeline. It does not run an additional pose model.
 ## Repository Structure
 
 ```text
-computer-vision-predictive-surveillance-system/
+computer-vision-behavioral-analysis/
 ├── .github/
 │   └── workflows/
 ├── data/
