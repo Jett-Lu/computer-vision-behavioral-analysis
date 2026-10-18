@@ -23,7 +23,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libgles2
+          sudo apt-get install --yes --no-install-recommends libgles2 libegl1
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

@@ -373,11 +373,11 @@ with:
 .venv/bin/python
 ```
 
-On Debian/Ubuntu Linux, MediaPipe also requires the native GLES runtime:
+On Debian/Ubuntu Linux, MediaPipe also requires the native GLES and EGL runtimes:
 
 ```bash
 sudo apt-get update
-sudo apt-get install --yes --no-install-recommends libgles2
+sudo apt-get install --yes --no-install-recommends libgles2 libegl1
 ```
 
 The wheel verification loads the bundled detector and checks this dependency.
