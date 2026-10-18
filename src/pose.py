@@ -97,8 +97,13 @@ class PoseAnalyzer:
             classes=[0],
             persist=True,
             tracker="bytetrack.yaml",
+            stream=False,
         )
-        result = results[0]
+        # Ultralytics versions annotate track() as either a list or an iterator.
+        # Consume one frame without discarding the Results type information.
+        result = next(iter(results), None)
+        if result is None:
+            return []
         boxes = result.boxes
         keypoints = result.keypoints
         if boxes is None or keypoints is None:

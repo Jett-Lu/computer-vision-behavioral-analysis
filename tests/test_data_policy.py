@@ -5,14 +5,103 @@ import sys
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from data_policy import RetentionRule, apply_retention, plan_retention, ensure_private_directory
+from data_policy import _safe_path
+import data_policy
 
 
 class DataPolicyTest(unittest.TestCase):
+    def test_system_alias_exception_is_narrow_and_checks_ownership(self):
+        # Model the OS-owned alias without requiring a macOS host or root access.
+        alias = MagicMock(spec=Path)
+        alias.__str__.return_value = "/var"
+        alias.readlink.return_value = Path("private/var")
+        alias.lstat.return_value.st_uid = 0
+        alias.parent.lstat.return_value.st_uid = 0
+        alias.parent.lstat.return_value.st_mode = 0o40755
+        with patch("sys.platform", "darwin"):
+            self.assertEqual(data_policy._macos_system_alias_target(alias), Path("/private/var"))
+            alias.readlink.return_value = Path("/outside")
+            self.assertIsNone(data_policy._macos_system_alias_target(alias))
+            alias.readlink.return_value = Path("private/var")
+            alias.lstat.return_value.st_uid = 501
+            self.assertIsNone(data_policy._macos_system_alias_target(alias))
+            alias.lstat.return_value.st_uid = 0
+            alias.parent.lstat.return_value.st_mode = 0o40777
+            self.assertIsNone(data_policy._macos_system_alias_target(alias))
+            alias.parent.lstat.return_value.st_mode = 0o40755
+            alias.__str__.return_value = "/home/user/var"
+            self.assertIsNone(data_policy._macos_system_alias_target(alias))
+        alias.__str__.return_value = "/var"
+        with patch("sys.platform", "linux"):
+            self.assertIsNone(data_policy._macos_system_alias_target(alias))
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS system aliases")
+    def test_macos_system_alias_allows_private_creation_and_retention(self):
+        for alias in (Path("/var"), Path("/tmp")):
+            with self.subTest(alias=alias):
+                base = alias / "tmp" if alias.name == "var" else alias
+                with tempfile.TemporaryDirectory(dir=base) as directory:
+                    root = Path(directory) / "private"
+                    ensure_private_directory(root)
+                    self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+                    image = root / "portrait.jpg"
+                    image.write_bytes(b"expired")
+                    os.utime(image, (1, 1))
+                    plan = plan_retention([RetentionRule("identities", root, 1)])
+                    self.assertEqual(plan[0].path, image.resolve())
+                    self.assertEqual(apply_retention(plan), 1)
+                    self.assertFalse(image.exists())
+
+    def test_linked_ancestor_and_dangling_link_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            outside = root / "outside"
+            outside.mkdir()
+            link = root / "link"
+            dangling = root / "dangling"
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+                dangling.symlink_to(root / "missing", target_is_directory=True)
+            except OSError:
+                self.skipTest("symlink creation requires OS permission")
+            for target in (link / "new", dangling):
+                with self.subTest(target=target), self.assertRaises(ValueError):
+                    ensure_private_directory(target)
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_hardlinked_retention_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            original = root / "original.jpg"
+            original.write_bytes(b"keep")
+            linked = root / "linked.jpg"
+            os.link(original, linked)
+            os.utime(original, (1, 1))
+            with self.assertRaises(ValueError):
+                plan_retention([RetentionRule("identities", root, 1)])
+            self.assertEqual(original.read_bytes(), b"keep")
+            self.assertEqual(linked.read_bytes(), b"keep")
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS system aliases")
+    def test_macos_alias_does_not_allow_user_links_or_alias_roots(self):
+        with tempfile.TemporaryDirectory(dir="/var/tmp") as directory:
+            root = Path(directory)
+            outside = root / "outside"
+            outside.mkdir()
+            marker = outside / "portrait.jpg"
+            marker.write_bytes(b"keep")
+            link = root / "link"
+            link.symlink_to(outside, target_is_directory=True)
+            for target in (link, link / "child", Path("/var"), Path("/tmp")):
+                with self.subTest(target=target), self.assertRaises(ValueError):
+                    _safe_path(target)
+            self.assertEqual(marker.read_bytes(), b"keep")
+
     @unittest.skipUnless(os.name == "nt", "Windows junction verification")
     def test_windows_junction_is_rejected_without_touching_target(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import time
 
 from config import AppConfig
@@ -17,10 +18,28 @@ from config import AppConfig
 MEDIA_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".webp", ".avi", ".m4v", ".mkv", ".mov", ".mp4"}
 
 
+def _macos_system_alias_target(path: Path) -> Path | None:
+    """Recognize only the root-owned macOS temporary-directory aliases."""
+    if sys.platform != "darwin" or str(path) not in {"/var", "/tmp"}:
+        return None
+    target = Path("/private") / str(path).lstrip("/")
+    parent = path.parent.lstat()
+    if path.lstat().st_uid != 0 or parent.st_uid != 0 or parent.st_mode & 0o022:
+        return None
+    if path.readlink() not in {target, target.relative_to("/")}:
+        return None
+    return target
+
+
 def _safe_path(path: Path) -> Path:
     path = path.absolute()
     for part in (path, *path.parents):
         if part.is_symlink():
+            target = _macos_system_alias_target(part)
+            if target is not None and part != path:
+                # Recheck the entire physical path; links beneath /private are
+                # not trusted. Never accept the system alias itself as a root.
+                return _safe_path(target / path.relative_to(part))
             raise ValueError(f"Refusing linked data path: {part}")
         if part.exists():
             info = part.lstat()

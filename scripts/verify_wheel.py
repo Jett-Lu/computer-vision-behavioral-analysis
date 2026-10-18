@@ -23,7 +23,7 @@ def main() -> None:
     if len(wheels) != 1:
         parser.error("dist_dir must contain exactly one application wheel")
     with tempfile.TemporaryDirectory(prefix="monitoring-wheel-") as directory:
-        root = Path(directory)
+        root = Path(directory).resolve()
         environment = root / "venv"
         venv.EnvBuilder(with_pip=True, system_site_packages=True).create(environment)
         scripts = environment / ("Scripts" if os.name == "nt" else "bin")

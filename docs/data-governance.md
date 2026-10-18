@@ -30,6 +30,12 @@ reparse points and multiply-linked files are rejected. Migration may have
 partially tightened permissions if an OS operation fails; correct the failure
 and rerun it under the same account.
 
+On macOS, descendants of the root-owned `/var -> /private/var` and
+`/tmp -> /private/tmp` system aliases are supported. The alias target and
+ownership are checked, then the complete physical path is checked again.
+The aliases themselves cannot be managed roots; user-created links and
+links beneath the physical path remain rejected.
+
 Custom CLI export folders outside the configured output root are not included
 in migration or retention. Use a dedicated private folder or `MONITOR_HOME`
 and keep exports under its output folder. Original input media, validation
