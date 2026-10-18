@@ -373,6 +373,15 @@ with:
 .venv/bin/python
 ```
 
+On Debian/Ubuntu Linux, MediaPipe also requires the native GLES runtime:
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes --no-install-recommends libgles2
+```
+
+The wheel verification loads the bundled detector and checks this dependency.
+
 ### Exact Tested Environment
 
 `requirements-tested.txt` is a historical July 2026 Windows snapshot of
