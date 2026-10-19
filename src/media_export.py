@@ -73,8 +73,11 @@ def export_media(
         print(f"Add a file and run the command again. Output will appear in {output_dir}")
         return []
 
-    input_files = set(media_files)
-    if any(annotated_output_path(path, output_dir) in input_files for path in media_files):
+    input_files = {path.resolve() for path in media_files}
+    if any(
+        safe_file_path(annotated_output_path(path, output_dir)) in input_files
+        for path in media_files
+    ):
         raise ValueError("Output paths overlap input files; choose a separate output directory.")
 
     results: list[ExportResult] = []

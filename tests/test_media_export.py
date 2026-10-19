@@ -15,6 +15,18 @@ from media_export import annotated_output_path, discover_media_files, export_med
 
 
 class MediaExportHelpersTest(unittest.TestCase):
+    def test_overlap_check_compares_canonical_input_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "child").mkdir()
+            (root / "photo.png").write_bytes(b"original")
+            protected = root / "photo_annotated.png"
+            protected.write_bytes(b"keep")
+            with patch("media_export._create_processor"):
+                with self.assertRaisesRegex(ValueError, "input"):
+                    export_media(root / "child" / "..", root)
+            self.assertEqual(protected.read_bytes(), b"keep")
+
     def test_export_refuses_to_overwrite_another_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
