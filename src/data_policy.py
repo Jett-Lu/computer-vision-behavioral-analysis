@@ -5,6 +5,7 @@ encryption, secure erasure, or protection against the account owner/admin.
 """
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,9 @@ import stat
 import subprocess
 import sys
 import time
+import tempfile
+from typing import Iterator
+from io import FileIO, TextIOWrapper
 
 from config import AppConfig
 
@@ -107,6 +111,64 @@ def ensure_private_directory(path: Path) -> None:
         # Do not leave an unprotected directory looking successfully initialized.
         path.rmdir()
         raise
+
+
+def safe_file_path(path: Path) -> Path:
+    """Validate the original spelling before resolving links or opening a file."""
+    path = _safe_path(path)
+    if path.exists():
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError(f"Refusing non-regular or multiply-linked file: {path}")
+    return path
+
+
+def open_private_append(path: Path) -> TextIOWrapper:
+    """Open a regular log/event file without truncation or following final links."""
+    path = safe_file_path(path)
+    ensure_private_directory(path.parent)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or not os.path.samestat(info, safe_file_path(path).stat())
+        ):
+            raise ValueError(f"Data file changed while opening: {path}")
+        _restrict_access(path)
+        return TextIOWrapper(FileIO(descriptor, mode="ab"), encoding="utf-8")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def private_temporary_file(directory: Path, suffix: str = "") -> Iterator[Path]:
+    """Reserve an unpredictable private file; preserve suffix for media codecs."""
+    ensure_private_directory(directory)
+    directory = _safe_path(directory)
+    descriptor, name = tempfile.mkstemp(prefix=".monitor-", suffix=suffix, dir=directory)
+    os.close(descriptor)
+    path = Path(name)
+    try:
+        _restrict_access(path)
+        yield path
+    finally:
+        safe_file_path(path).unlink(missing_ok=True)
+
+
+@contextmanager
+def atomic_output(destination: Path) -> Iterator[Path]:
+    """Publish only complete output after rechecking both paths and file types."""
+    destination = safe_file_path(destination)
+    with private_temporary_file(destination.parent, destination.suffix) as temporary:
+        yield temporary
+        safe_file_path(temporary)
+        safe_file_path(destination)
+        os.replace(temporary, destination)
 
 
 @dataclass(frozen=True)

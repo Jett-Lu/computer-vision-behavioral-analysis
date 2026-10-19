@@ -7,6 +7,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
+from data_policy import ensure_private_directory
 from time import perf_counter
 from typing import Any, Sequence
 
@@ -62,7 +63,7 @@ def evaluate_all_models(
     device = resolve_device(device_name)
     seed = int(metadata.get("seed", 2026))
     set_reproducible_seed(seed)
-    results_root.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(results_root)
     results: dict[str, dict[str, Any]] = {}
     checkpoint_hashes: dict[str, str] = {}
     prediction_rows: list[dict] = []

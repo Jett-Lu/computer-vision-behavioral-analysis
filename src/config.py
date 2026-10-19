@@ -13,7 +13,8 @@ from monitoring_assets import FACE_DETECTOR_PATH
 def _runtime_root() -> Path:
     override = os.environ.get("MONITOR_HOME", "").strip()
     if override:
-        return Path(override).expanduser().resolve()
+        # Preserve links for the security helpers to reject before resolution.
+        return Path(override).expanduser().absolute()
     module_dir = Path(__file__).resolve().parent
     if module_dir.name == "src" and (module_dir.parent / "pyproject.toml").is_file():
         return module_dir.parent
@@ -90,6 +91,9 @@ class AppConfig:
     event_dir: Path = PROJECT_ROOT / "output" / "events"
 
     allow_model_downloads: bool = True
+    identity_enabled: bool = True
+    expression_enabled: bool = True
+    allow_unchecked_enrollment: bool = False
     model_download_timeout_seconds: float = 60.0
     model_download_attempts: int = 3
 
@@ -162,6 +166,8 @@ class AppConfig:
             log_dir=root / "output" / "logs",
             event_dir=root / "output" / "events",
             allow_model_downloads=_env_bool("MONITOR_ALLOW_MODEL_DOWNLOADS", True),
+            identity_enabled=_env_bool("MONITOR_IDENTITY_ENABLED", True),
+            expression_enabled=_env_bool("MONITOR_EXPRESSION_ENABLED", True),
             model_download_timeout_seconds=_env_float(
                 "MONITOR_MODEL_DOWNLOAD_TIMEOUT", 60.0, minimum=5.0
             ),

@@ -3,6 +3,8 @@
 import os
 
 from config import DEFAULT_CONFIG
+from data_policy import ensure_private_directory
+from pathlib import Path
 
 
 def disable_ultralytics_telemetry() -> None:
@@ -10,7 +12,8 @@ def disable_ultralytics_telemetry() -> None:
     # Application-managed, hash-verified downloads remain available.
     os.environ["YOLO_OFFLINE"] = "true"
     cache = DEFAULT_CONFIG.project_root / ".tmp" / "ultralytics"
-    cache.mkdir(parents=True, exist_ok=True)
+    cache = Path(os.environ.get("YOLO_CONFIG_DIR", str(cache)))
+    ensure_private_directory(cache)
     os.environ.setdefault("YOLO_CONFIG_DIR", str(cache))
     from ultralytics import settings
     from ultralytics.utils.events import events

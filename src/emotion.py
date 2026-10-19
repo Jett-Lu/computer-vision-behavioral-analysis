@@ -8,10 +8,11 @@ import shutil
 
 from config import DEFAULT_CONFIG
 from dependency_privacy import disable_onnx_telemetry
+from data_policy import ensure_private_directory, atomic_output, safe_file_path
 
 PROJECT_ROOT = DEFAULT_CONFIG.project_root
 TMP_DIR = PROJECT_ROOT / ".tmp"
-(TMP_DIR / "matplotlib").mkdir(parents=True, exist_ok=True)
+ensure_private_directory(Path(os.environ.get("MPLCONFIGDIR", str(TMP_DIR / "matplotlib"))))
 os.environ.setdefault("MPLCONFIGDIR", str(TMP_DIR / "matplotlib"))
 
 import cv2
@@ -202,14 +203,9 @@ class FaceEmotionAnalyzer:
 
 def _sync_emotiefflib_cache(model_path: Path) -> None:
     """Place the verified model where EmotiEffLib expects to find it."""
-    cache_path = Path.home() / ".emotiefflib" / model_path.name
+    cache_path = safe_file_path(Path.home() / ".emotiefflib" / model_path.name)
     if cache_path.exists() and file_sha256(cache_path) == EMOTION_MODEL_SHA256:
         return
 
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = cache_path.with_name(f"{cache_path.name}.tmp-{os.getpid()}")
-    try:
+    with atomic_output(cache_path) as temporary_path:
         shutil.copyfile(model_path, temporary_path)
-        os.replace(temporary_path, cache_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)

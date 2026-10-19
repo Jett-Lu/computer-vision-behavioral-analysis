@@ -12,7 +12,7 @@ import cv2
 
 from camera import open_capture, prompt_camera_source
 from config import DEFAULT_CONFIG, AppConfig
-from data_policy import ensure_private_directory
+from data_policy import ensure_private_directory, atomic_output, _safe_path, safe_file_path
 
 
 ENROLLMENTS_DIR = DEFAULT_CONFIG.enrollments_dir
@@ -87,7 +87,7 @@ class DeleteSession:
 
 def enrollment_folders(enrollments_dir: Path = ENROLLMENTS_DIR) -> list[str]:
     ensure_private_directory(enrollments_dir)
-    return sorted(path.name for path in enrollments_dir.iterdir() if path.is_dir())
+    return sorted(_safe_path(path).name for path in enrollments_dir.iterdir() if path.is_dir())
 
 
 def sanitize_enrollment_label(value: str) -> str:
@@ -184,7 +184,14 @@ def capture_enrollment_images(
         raise RuntimeError("Enrollment folder has not been selected.")
 
     runtime_config = config or AppConfig.from_env()
+    if not runtime_config.identity_enabled:
+        print("Enrollment is disabled while identity recognition is off.")
+        return MenuState.ENROLL_ABORT
     quality_identifier = _create_enrollment_identifier(runtime_config)
+    if quality_identifier is None and not runtime_config.allow_unchecked_enrollment:
+        print("Enrollment aborted: face-quality validation is unavailable.")
+        return MenuState.ENROLL_ABORT
+    ensure_private_directory(session.folder)
     camera_source = prompt_camera_source()
     capture = open_capture(camera_source)
     if not capture.isOpened():
@@ -208,12 +215,17 @@ def capture_enrollment_images(
                 accepted, quality_message = validate_enrollment_frame(
                     quality_identifier,
                     frame,
+                    allow_unchecked=runtime_config.allow_unchecked_enrollment,
                 )
                 quality_color = (0, 180, 0) if accepted else (0, 0, 255)
                 if accepted:
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                     image_path = session.folder / f"{session.label}_{count}_{timestamp}.jpg"
-                    if cv2.imwrite(str(image_path), frame):
+                    with atomic_output(image_path) as temporary:
+                        saved = cv2.imwrite(str(temporary), frame)
+                        if not saved:
+                            raise OSError("Failed to write enrollment image")
+                    if saved:
                         count += 1
                         if count >= session.target_image_count:
                             session.saved_count = 0
@@ -252,18 +264,27 @@ def capture_enrollment_images(
         cv2.waitKey(1)
 
 
-def validate_enrollment_frame(identifier, frame) -> tuple[bool, str]:
+def validate_enrollment_frame(
+    identifier, frame, *, allow_unchecked: bool = False
+) -> tuple[bool, str]:
     """Require one clear, sufficiently large face before saving enrollment data."""
     if identifier is None:
-        return True, "Saved without automatic face-quality checks"
-    faces = identifier.detect_faces(frame)
-    if not faces:
-        return False, "No face found; face the camera and try again"
-    if len(faces) > 1:
-        return False, "More than one face found; only one person may enroll at a time"
-    if not identifier.is_face_usable(faces[0]):
-        return False, "Face is too small or uncertain; move closer and improve lighting"
-    return True, "Face accepted; change angle slightly for the next photo"
+        return (
+            (True, "Unchecked enrollment explicitly enabled")
+            if allow_unchecked
+            else (False, "Face-quality validation unavailable; enrollment rejected")
+        )
+    try:
+        faces = identifier.detect_faces(frame)
+        if not faces:
+            return False, "No face found; face the camera and try again"
+        if len(faces) > 1:
+            return False, "More than one face found; only one person may enroll at a time"
+        if not identifier.is_face_usable(faces[0]):
+            return False, "Face is too small or uncertain; move closer and improve lighting"
+        return True, "Face accepted; change angle slightly for the next photo"
+    except Exception:
+        return False, "Face-quality validation failed; enrollment rejected"
 
 
 def _create_enrollment_identifier(config: AppConfig):
@@ -305,6 +326,7 @@ def handle_enrollment_state(
 
         session.label = label
         session.folder = enrollments_dir / label
+        _safe_path(session.folder)
         if not session.folder.exists():
             ensure_private_directory(session.folder)
             return MenuState.ENROLL_GET_COUNT, ""
@@ -440,6 +462,9 @@ def main(config: AppConfig | None = None) -> None:
         elif normalized_command == "menu":
             state = MenuState.MENU
         elif normalized_command in {"enroll", "enrol"}:
+            if not config.identity_enabled:
+                error = "Enrollment is disabled while identity recognition is off."
+                continue
             enrollment_session.reset()
             state = MenuState.ENROLL_GET_NAME
         elif normalized_command == "delete":
@@ -466,14 +491,16 @@ def main(config: AppConfig | None = None) -> None:
 
 
 def _remove_enrollment_folder(folder: Path, enrollments_dir: Path) -> None:
-    root = enrollments_dir.resolve()
-    resolved = folder.resolve()
+    root = _safe_path(enrollments_dir)
+    resolved = _safe_path(folder)
     if resolved.parent != root:
         raise ValueError("path is outside the enrollment directory")
-    if folder.is_symlink():
-        folder.unlink()
-    else:
-        shutil.rmtree(folder)
+    for directory, directories, files in os.walk(resolved, followlinks=False):
+        for name in directories:
+            _safe_path(Path(directory) / name)
+        for name in files:
+            safe_file_path(Path(directory) / name)
+    shutil.rmtree(_safe_path(folder))
 
 
 if __name__ == "__main__":

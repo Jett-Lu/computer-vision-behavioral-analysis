@@ -93,3 +93,29 @@ Windows account. The initial retention preview selected zero files; no user
 data was deleted. Tests cover expiry selection, changed-file refusal, links,
 permission failures and Windows ACL principals. POSIX permission behavior and
 deployment backup/retention procedures still require target-platform checks.
+
+## Phase 2 write safeguards
+
+Diagnostics, managed model/cache initialization, exports, enrollment, event logs,
+rotating logs, validation reports, and activity benchmark outputs use the shared
+data-policy helpers. Original destination paths are checked before resolving them.
+Linked ancestors, junctions/reparse points, non-regular files, and hardlinked file
+destinations are rejected. Existing unsafe paths must be corrected by the operator;
+the application does not silently follow them.
+
+New sensitive files use private permissions before content is written. Atomic
+writers reserve unique temporary names, preserve codec suffixes, and revalidate
+the temporary file and destination before replacement. Failed writes retain the
+previous destination. Log rotation checks its backup destinations as well.
+
+Existing directories retain the explicit `--secure-data` migration policy; their
+permissions are not silently rewritten during ordinary startup. These safeguards
+do not provide encryption or defend against a malicious process running as the
+same account/admin. Native codecs and cross-platform replacement still use paths:
+keep managed directories trusted and stop monitoring during maintenance.
+
+Identity and expression switches are independent and default to enabled for
+compatibility. `--pose-only` disables both and activity recognition. Anonymous
+reports omit identity fields and expression events, but exported pixels are not
+redacted and existing data is not deleted. Unchecked enrollment now requires an
+explicit `--allow-unchecked-enrollment` invocation (or explicit API configuration).

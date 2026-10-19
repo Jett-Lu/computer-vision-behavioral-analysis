@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from logging_setup import get_logger
-from data_policy import ensure_private_directory
+from data_policy import open_private_append
 
 logger = get_logger("events")
 
@@ -49,15 +49,23 @@ class MonitorEvent:
 class EventRecorder:
     """Write meaningful track changes to JSONL and retain recent UI messages."""
 
-    def __init__(self, output_path: Path | None, recent_limit: int = 5) -> None:
+    def __init__(
+        self,
+        output_path: Path | None,
+        recent_limit: int = 5,
+        *,
+        identity_enabled: bool = True,
+        expression_enabled: bool = True,
+    ) -> None:
+        self.identity_enabled = identity_enabled
+        self.expression_enabled = expression_enabled
         self.output_path = output_path
         self._stream = None
         self._previous: dict[int, TrackSnapshot] = {}
         self._recent_messages: deque[str] = deque(maxlen=max(1, recent_limit))
         self._context: dict[str, Any] = {}
         if output_path is not None:
-            ensure_private_directory(output_path.parent)
-            self._stream = output_path.open("a", encoding="utf-8")
+            self._stream = open_private_append(output_path)
             logger.info("Event report: %s", output_path)
 
     @property
@@ -119,7 +127,11 @@ class EventRecorder:
                     {"wave_count": snapshot.wave_count},
                     f"Track {snapshot.track_key}: wave {snapshot.wave_count}",
                 )
-            if snapshot.identity_confirmed and snapshot.identity_name != previous.identity_name:
+            if (
+                self.identity_enabled
+                and snapshot.identity_confirmed
+                and snapshot.identity_name != previous.identity_name
+            ):
                 self._emit(
                     "identity_confirmed",
                     snapshot,
@@ -129,7 +141,8 @@ class EventRecorder:
                     f"Track {snapshot.track_key}: identity {snapshot.identity_name}",
                 )
             if (
-                snapshot.expression_label is not None
+                self.expression_enabled
+                and snapshot.expression_label is not None
                 and snapshot.expression_label != previous.expression_label
             ):
                 self._emit(
@@ -216,6 +229,8 @@ class EventRecorder:
         self._recent_messages.append(message)
         if self._stream is not None:
             payload = asdict(event)
+            if not self.identity_enabled:
+                payload.pop("identity_name")
             if event.activity_label is None:
                 payload.pop("activity_label")
                 payload.pop("activity_confidence")

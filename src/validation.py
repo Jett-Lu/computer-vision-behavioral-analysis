@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import Any
 import cv2
 
 from camera import CaptureClock
+from data_policy import atomic_output
 from config import AppConfig
 from detection import MonitoringProcessor
 
@@ -77,10 +77,7 @@ def run_validation(
         processor.close()
 
     if report_path is not None:
-        report_path = report_path.resolve()
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = report_path.with_name(f"{report_path.name}.tmp-{os.getpid()}")
-        try:
+        with atomic_output(report_path) as temporary_path:
             temporary_path.write_text(
                 json.dumps(
                     {
@@ -92,9 +89,6 @@ def run_validation(
                 ),
                 encoding="utf-8",
             )
-            os.replace(temporary_path, report_path)
-        finally:
-            temporary_path.unlink(missing_ok=True)
     return results
 
 

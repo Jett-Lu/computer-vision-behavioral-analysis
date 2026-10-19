@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    cache_dir = args.cache_dir.resolve()
+    cache_dir = args.cache_dir.absolute()
     metadata_mode = args.metadata_train is not None or args.metadata_test is not None
     if metadata_mode:
         if args.metadata_train is None or args.metadata_test is None:

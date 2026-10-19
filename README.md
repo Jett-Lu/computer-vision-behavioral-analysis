@@ -382,6 +382,34 @@ sudo apt-get install --yes --no-install-recommends libgles2 libegl1
 
 The wheel verification loads the bundled detector and checks this dependency.
 
+### Optional recognition and anonymous mode
+
+Identity recognition and facial-expression processing remain enabled by default.
+Disable them independently with `--no-identity` and `--no-expression`, or set
+`MONITOR_IDENTITY_ENABLED=false` and `MONITOR_EXPRESSION_ENABLED=false`.
+`--pose-only` disables both and activity recognition, including an activity model
+selected by environment or CLI. It retains pose tracking and gesture visualization.
+These options also apply to exports, validation, and `--doctor --prepare-models`.
+Disabled face modules do not initialize models or download their assets; identity
+fields and expression-change events are omitted when the corresponding module is off.
+
+```bash
+python -m main --detect --pose-only
+python -m main --doctor --prepare-models --pose-only
+```
+
+Anonymous mode does not blur faces in source images or annotated media, delete
+existing enrollments, or anonymize operator-provided filenames. Use `--no-events`
+to disable JSONL reports. Existing installed face packages and the bundled detector
+remain in the distribution but are not loaded by the anonymous frame pipeline.
+Gesture and expression outputs are unvalidated demonstrations, not risk predictions.
+
+Enrollment is disabled when identity recognition is off. Otherwise enrollment
+aborts if face-quality validation cannot initialize and rejects frames if validation
+fails. `--allow-unchecked-enrollment` explicitly permits saving without automatic
+checks when initialization is unavailable; this is off by default and has no
+environment-variable opt-in. Available checks still reject unsuitable faces.
+
 ### Exact Tested Environment
 
 `requirements-tested.txt` is a historical July 2026 Windows snapshot of

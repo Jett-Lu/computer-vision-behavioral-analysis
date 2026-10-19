@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-import os
 import platform
 import sys
 
 from config import AppConfig
+from data_policy import private_temporary_file
 from model_manager import (
     ModelUnavailableError,
     emotion_model_spec,
@@ -37,23 +37,25 @@ def run_diagnostics(
             True,
             f"{platform.system()} {platform.release()} | Python {sys.version.split()[0]}",
         ),
-        _check_packages(),
-        _check_opencv_face_apis(),
+        _check_packages(config),
         _check_writable_directory(config.output_dir, "Output directory"),
         _check_writable_directory(config.data_dir, "Model directory"),
-        _check_readable_file(config.emotion_face_model_path, "MediaPipe face detector"),
     ]
 
-    specs = (
-        *identity_model_specs(config),
-        pose_model_spec(config),
-        emotion_model_spec(config),
-    )
+    specs = [pose_model_spec(config)]
+    if config.identity_enabled:
+        checks.append(_check_opencv_face_apis())
+        specs.extend(identity_model_specs(config))
+    if config.expression_enabled:
+        checks.append(
+            _check_readable_file(config.emotion_face_model_path, "MediaPipe face detector")
+        )
+        specs.append(emotion_model_spec(config))
     for spec in specs:
         if prepare_models:
             try:
                 ensure_model(spec, config)
-            except ModelUnavailableError as exc:
+            except (ModelUnavailableError, OSError, ValueError) as exc:
                 checks.append(DiagnosticCheck(spec.name, False, str(exc)))
                 continue
         if not spec.path.exists():
@@ -80,7 +82,7 @@ def print_diagnostics(checks: list[DiagnosticCheck]) -> None:
     print(f"\nOverall: {'READY' if all(check.passed for check in checks) else 'ACTION REQUIRED'}")
 
 
-def _check_packages() -> DiagnosticCheck:
+def _check_packages(config: AppConfig | None = None) -> DiagnosticCheck:
     package_names = (
         "opencv-contrib-python",
         "numpy",
@@ -92,6 +94,12 @@ def _check_packages() -> DiagnosticCheck:
     installed: list[str] = []
     missing: list[str] = []
     for package_name in package_names:
+        if (
+            config is not None
+            and not config.expression_enabled
+            and package_name in {"mediapipe", "emotiefflib"}
+        ):
+            continue
         try:
             installed.append(f"{package_name}={version(package_name)}")
         except PackageNotFoundError:
@@ -122,12 +130,10 @@ def _check_opencv_face_apis() -> DiagnosticCheck:
 
 def _check_writable_directory(path: Path, name: str) -> DiagnosticCheck:
     try:
-        path.mkdir(parents=True, exist_ok=True)
-        probe = path / f".write-test-{os.getpid()}"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink()
+        with private_temporary_file(path) as probe:
+            probe.write_text("ok", encoding="utf-8")
         return DiagnosticCheck(name, True, str(path))
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return DiagnosticCheck(name, False, str(exc))
 
 

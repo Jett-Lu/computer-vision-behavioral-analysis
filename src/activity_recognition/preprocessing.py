@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
 from hashlib import sha256
 from pathlib import Path
+from data_policy import ensure_private_directory, atomic_output
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Iterable
 from zipfile import BadZipFile
@@ -230,8 +230,7 @@ def cache_activity_samples(
     completed = failed = 0
     for position, sample in enumerate(pending_samples, start=1):
         cache_path = Path(sample.cache_path)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = cache_path.with_suffix(f"{cache_path.suffix}.partial")
+        ensure_private_directory(cache_path.parent)
         started = perf_counter()
         try:
             frames = sample_video_frames(
@@ -255,7 +254,7 @@ def cache_activity_samples(
                 detected_count += int(selected is not None)
                 poses.append(normalize_pose(landmarks, box, frame.shape))
                 crops.append(crop_person(frame, box))
-            with temporary_path.open("wb") as stream:
+            with atomic_output(cache_path) as temporary_path, temporary_path.open("wb") as stream:
                 np.savez_compressed(
                     stream,
                     pose=np.stack(poses),
@@ -267,12 +266,10 @@ def cache_activity_samples(
                     pose_detection_rate=np.float32(detected_count / len(frames)),
                     extraction_seconds=np.float64(perf_counter() - started),
                 )
-            os.replace(temporary_path, cache_path)
             completed += 1
             print(f"[{position}/{len(pending_samples)}] cached {Path(sample.video_path).name}")
         except (OSError, RuntimeError, ValueError, cv2.error) as exc:
             failed += 1
-            temporary_path.unlink(missing_ok=True)
             print(f"[{position}/{len(pending_samples)}] failed {sample.video_path}: {exc}")
     return {"completed": completed, "skipped": skipped, "failed": failed}
 

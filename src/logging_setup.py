@@ -6,10 +6,22 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from data_policy import ensure_private_directory
+from data_policy import ensure_private_directory, open_private_append, safe_file_path
 
 
 LOGGER_NAME = "monitoring"
+
+
+class PrivateRotatingFileHandler(RotatingFileHandler):
+    def _open(self):
+        return open_private_append(Path(self.baseFilename))
+
+    def doRollover(self) -> None:
+        # Validate every source/destination before the standard rotation mutates any.
+        safe_file_path(Path(self.baseFilename))
+        for index in range(1, self.backupCount + 1):
+            safe_file_path(Path(f"{self.baseFilename}.{index}"))
+        super().doRollover()
 
 
 def configure_logging(level: str = "INFO", log_dir: Path | None = None) -> logging.Logger:
@@ -33,7 +45,7 @@ def configure_logging(level: str = "INFO", log_dir: Path | None = None) -> loggi
 
     if log_dir is not None:
         ensure_private_directory(log_dir)
-        file_handler = RotatingFileHandler(
+        file_handler = PrivateRotatingFileHandler(
             log_dir / "monitoring.log",
             maxBytes=2_000_000,
             backupCount=3,

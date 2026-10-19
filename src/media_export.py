@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +12,7 @@ import cv2
 from camera import CaptureClock
 from config import DEFAULT_CONFIG, AppConfig
 from logging_setup import get_logger
-from data_policy import ensure_private_directory
+from data_policy import ensure_private_directory, atomic_output, _safe_path, safe_file_path
 
 DEFAULT_INPUT_DIR = DEFAULT_CONFIG.input_dir
 DEFAULT_OUTPUT_DIR = DEFAULT_CONFIG.output_dir
@@ -39,7 +39,7 @@ def discover_media_files(input_path: Path) -> list[Path]:
     if not input_path.exists():
         if input_path.suffix.lower() in SUPPORTED_EXTENSIONS:
             return []
-        input_path.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(input_path)
     return sorted(
         path
         for path in input_path.iterdir()
@@ -62,8 +62,8 @@ def export_media(
     fail_on_error: bool = False,
 ) -> list[ExportResult]:
     """Process supported media inputs and return the successfully generated files."""
-    input_path = input_path.resolve()
-    output_dir = output_dir.resolve()
+    input_path = input_path.absolute()
+    output_dir = _safe_path(output_dir)
     ensure_private_directory(output_dir)
     media_files = discover_media_files(input_path)
     if not media_files:
@@ -81,7 +81,7 @@ def export_media(
     processor = _create_processor(config)
     try:
         for media_path in media_files:
-            output_path = annotated_output_path(media_path, output_dir)
+            output_path = safe_file_path(annotated_output_path(media_path, output_dir))
             print(f"\nProcessing {media_path.name}...")
             processor.reset_tracking(source=str(media_path))
             try:
@@ -117,18 +117,14 @@ def _export_image(input_path: Path, output_path: Path, processor: Any) -> Export
             force_identity=True,
         )
 
-    temporary_path = _partial_output_path(output_path)
-    try:
+    with atomic_output(output_path) as temporary_path:
         if not cv2.imwrite(str(temporary_path), annotated):
             raise RuntimeError("OpenCV could not write the annotated image.")
-        os.replace(temporary_path, output_path)
-    except Exception:
-        temporary_path.unlink(missing_ok=True)
-        raise
     return ExportResult(input_path, output_path, "image", frames_processed=1)
 
 
 def _export_video(input_path: Path, output_path: Path, processor: Any) -> ExportResult:
+    safe_file_path(output_path)
     capture = cv2.VideoCapture(str(input_path))
     if not capture.isOpened():
         capture.release()
@@ -136,58 +132,42 @@ def _export_video(input_path: Path, output_path: Path, processor: Any) -> Export
 
     writer: Any = None
     frames_processed = 0
-    temporary_path = _partial_output_path(output_path)
-    failed = False
-    try:
-        clock = CaptureClock(capture, recorded=True)
-        fps = clock.fps
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if width <= 0 or height <= 0:
-            raise RuntimeError("The video does not report a valid frame size.")
+    with ExitStack() as stack:
+        stack.callback(capture.release)
+        temporary_path = stack.enter_context(atomic_output(output_path))
+        try:
+            clock = CaptureClock(capture, recorded=True)
+            fps = clock.fps
+            width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            if width <= 0 or height <= 0:
+                raise RuntimeError("The video does not report a valid frame size.")
 
-        writer = cv2.VideoWriter(
-            str(temporary_path),
-            cv2.VideoWriter.fourcc(*"mp4v"),
-            fps,
-            (width, height),
-        )
-        if not writer.isOpened():
-            raise RuntimeError("OpenCV could not create the annotated MP4 output.")
+            writer = cv2.VideoWriter(
+                str(temporary_path),
+                cv2.VideoWriter.fourcc(*"mp4v"),
+                fps,
+                (width, height),
+            )
+            if not writer.isOpened():
+                raise RuntimeError("OpenCV could not create the annotated MP4 output.")
 
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            timestamp = clock.timestamp()
-            writer.write(processor.process_frame(frame, timestamp=timestamp))
-            frames_processed += 1
-            if frames_processed % 30 == 0:
-                print(f"Processed {frames_processed} frames...")
-    except Exception:
-        failed = True
-        raise
-    finally:
-        capture.release()
-        if writer is not None:
-            writer.release()
-        if failed:
-            temporary_path.unlink(missing_ok=True)
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                timestamp = clock.timestamp()
+                writer.write(processor.process_frame(frame, timestamp=timestamp))
+                frames_processed += 1
+                if frames_processed % 30 == 0:
+                    print(f"Processed {frames_processed} frames...")
+        finally:
+            if writer is not None:
+                writer.release()
 
-    if frames_processed == 0:
-        temporary_path.unlink(missing_ok=True)
-        raise RuntimeError("The video did not contain readable frames.")
-    try:
-        os.replace(temporary_path, output_path)
-    except OSError:
-        temporary_path.unlink(missing_ok=True)
-        raise
+        if frames_processed == 0:
+            raise RuntimeError("The video did not contain readable frames.")
     return ExportResult(input_path, output_path, "video", frames_processed)
-
-
-def _partial_output_path(output_path: Path) -> Path:
-    """Keep the real media suffix while writing an atomic temporary output."""
-    return output_path.with_name(f"{output_path.stem}.partial{output_path.suffix}")
 
 
 def _create_processor(config: AppConfig | None = None) -> Any:

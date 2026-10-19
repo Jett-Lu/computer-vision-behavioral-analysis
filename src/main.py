@@ -137,6 +137,26 @@ def parse_args() -> argparse.Namespace:
         type=_positive_int,
         help="Number of activity probability vectors to average.",
     )
+    parser.add_argument(
+        "--no-identity",
+        action="store_true",
+        help="Disable face identity models and identity reporting.",
+    )
+    parser.add_argument(
+        "--no-expression",
+        action="store_true",
+        help="Disable facial-expression models and reporting.",
+    )
+    parser.add_argument(
+        "--pose-only",
+        action="store_true",
+        help="Anonymous pose mode: disable identity, expression, and activity models.",
+    )
+    parser.add_argument(
+        "--allow-unchecked-enrollment",
+        action="store_true",
+        help="Explicitly permit enrollment without automatic face-quality checks.",
+    )
     args = parser.parse_args()
     if args.apply_retention and not args.retention:
         parser.error("--apply-retention requires --retention")
@@ -164,10 +184,13 @@ def main() -> None:
         return
     config = replace(
         config,
+        identity_enabled=config.identity_enabled and not (args.no_identity or args.pose_only),
+        expression_enabled=config.expression_enabled and not (args.no_expression or args.pose_only),
+        allow_unchecked_enrollment=args.allow_unchecked_enrollment,
         allow_model_downloads=(False if args.no_model_downloads else config.allow_model_downloads),
         event_logging_enabled=(False if args.no_events else config.event_logging_enabled),
         log_level=args.log_level or config.log_level,
-        activity_model=args.activity_model or config.activity_model,
+        activity_model="none" if args.pose_only else (args.activity_model or config.activity_model),
         activity_checkpoint_path=(
             args.activity_checkpoint.resolve()
             if args.activity_checkpoint is not None

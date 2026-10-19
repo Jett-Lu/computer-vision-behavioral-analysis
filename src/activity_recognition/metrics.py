@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence, TypedDict
 
 import numpy as np
+from data_policy import atomic_output
 
 
 def confusion_matrix(
@@ -122,8 +123,8 @@ def save_confusion_matrix(
             )
     figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
     figure.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=160)
+    with atomic_output(output_path) as temporary:
+        figure.savefig(temporary, dpi=160)
     plt.close(figure)
 
 
@@ -155,14 +156,14 @@ def save_training_curves(histories: dict[str, dict], output_path: Path) -> None:
         axis.grid(alpha=0.2)
         axis.legend(fontsize=8)
     figure.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=160)
+    with atomic_output(output_path) as temporary:
+        figure.savefig(temporary, dpi=160)
     plt.close(figure)
 
 
 def write_metrics_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    with atomic_output(path) as temporary:
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def write_comparison_csv(path: Path, results: dict[str, dict]) -> None:
@@ -176,8 +177,10 @@ def write_comparison_csv(path: Path, results: dict[str, dict]) -> None:
         "inference_latency_ms",
         "sample_count",
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as stream:
+    with (
+        atomic_output(path) as temporary,
+        temporary.open("w", newline="", encoding="utf-8") as stream,
+    ):
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         for model_name, metrics in results.items():
@@ -197,8 +200,10 @@ def write_predictions_csv(path: Path, rows: Sequence[dict]) -> None:
         "predicted_index",
         "predicted_label",
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as stream:
+    with (
+        atomic_output(path) as temporary,
+        temporary.open("w", newline="", encoding="utf-8") as stream,
+    ):
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)

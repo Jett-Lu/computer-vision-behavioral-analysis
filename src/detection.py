@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 from collections import defaultdict
 from contextlib import contextmanager
@@ -28,8 +27,6 @@ from model_manager import (
 from review import HIGH_COLOR, ReviewState
 
 TMP_DIR = DEFAULT_CONFIG.project_root / ".tmp"
-(TMP_DIR / "ultralytics").mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("YOLO_CONFIG_DIR", str(TMP_DIR / "ultralytics"))
 
 logger = get_logger("detection")
 _AUTO = object()
@@ -166,7 +163,9 @@ class MonitoringProcessor:
         configure_logging(self.config.log_level, self.config.log_dir)
 
         self.identity_matcher = self._prepare_identity_matcher(identity_matcher)
-        if known_identities is not None:
+        if not self.config.identity_enabled:
+            self.known_identities = []
+        elif known_identities is not None:
             self.known_identities = list(known_identities)
         elif self.identity_matcher is not None:
             self.known_identities = self.identity_matcher.load_enrollments(
@@ -211,13 +210,24 @@ class MonitoringProcessor:
 
         if event_recorder is not None:
             self.event_recorder = event_recorder
+            if isinstance(event_recorder, EventRecorder):
+                event_recorder.identity_enabled = (
+                    event_recorder.identity_enabled and self.config.identity_enabled
+                )
+                event_recorder.expression_enabled = (
+                    event_recorder.expression_enabled and self.config.expression_enabled
+                )
         else:
             event_path = (
                 session_event_path(self.config.event_dir)
                 if self.config.event_logging_enabled
                 else None
             )
-            self.event_recorder = EventRecorder(event_path)
+            self.event_recorder = EventRecorder(
+                event_path,
+                identity_enabled=self.config.identity_enabled,
+                expression_enabled=self.config.expression_enabled,
+            )
 
         self.frame_count = 0
         self._timestamp_origin: float | None = None
@@ -432,6 +442,8 @@ class MonitoringProcessor:
                 self.event_recorder.close()
 
     def _prepare_identity_matcher(self, supplied_matcher: Any) -> Any:
+        if not self.config.identity_enabled:
+            return None
         if supplied_matcher is not _AUTO:
             return supplied_matcher
         try:
@@ -449,6 +461,8 @@ class MonitoringProcessor:
             return None
 
     def _prepare_emotion_analyzer(self, supplied_analyzer: Any) -> Any:
+        if not self.config.expression_enabled:
+            return None
         if supplied_analyzer is not _AUTO:
             return supplied_analyzer
         try:

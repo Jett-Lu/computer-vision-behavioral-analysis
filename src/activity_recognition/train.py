@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import random
 from copy import deepcopy
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
+from data_policy import ensure_private_directory, atomic_output
 from time import perf_counter
 from typing import Any, Iterable
 
@@ -89,7 +89,7 @@ def cache_backbone_features(
     if model_name not in {"cnn", "advanced"}:
         raise ValueError("Backbone features are only used by cnn and advanced")
     model_feature_root = feature_root / model_name
-    model_feature_root.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(model_feature_root)
     sample_list = list(samples)
     provenance = {sample.key: _feature_provenance(sample, model_name) for sample in sample_list}
     pending_samples = [
@@ -109,7 +109,6 @@ def cache_backbone_features(
     with torch.inference_mode():
         for position, sample in enumerate(pending_samples, start=1):
             output_path = model_feature_root / f"{sample.key}.npy"
-            temporary_path = output_path.with_suffix(f"{output_path.suffix}.partial")
             with np.load(Path(sample.cache_path), allow_pickle=False) as payload:
                 crops = np.asarray(payload["crops"])
             if model_name == "cnn":
@@ -118,20 +117,18 @@ def cache_backbone_features(
             else:
                 inputs = video_tensor(crops).to(device)
                 vector = extractor(inputs).squeeze(0)
-            with temporary_path.open("wb") as stream:
+            with atomic_output(output_path) as temporary_path, temporary_path.open("wb") as stream:
                 np.save(
                     stream,
                     vector.detach().cpu().numpy().astype(np.float32),
                     allow_pickle=False,
                 )
-            os.replace(temporary_path, output_path)
             sidecar_path = output_path.with_suffix(".json")
-            temporary_sidecar = sidecar_path.with_suffix(".json.partial")
             metadata = dict(provenance[sample.key])
             metadata["vector_sha256"] = file_fingerprint(output_path)
             metadata["vector_shape"] = list(vector.shape)
-            temporary_sidecar.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
-            os.replace(temporary_sidecar, sidecar_path)
+            with atomic_output(sidecar_path) as temporary_sidecar:
+                temporary_sidecar.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
             print(f"[{position}/{len(pending_samples)}] cached {model_name} features")
 
 
@@ -215,8 +212,8 @@ def train_all_models(
     validate_cached_samples(development_samples, metadata)
     device = resolve_device(device_name)
     set_reproducible_seed(seed)
-    model_root.mkdir(parents=True, exist_ok=True)
-    feature_root.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(model_root)
+    ensure_private_directory(feature_root)
 
     for model_name in ("cnn", "advanced"):
         cache_backbone_features(
@@ -382,29 +379,30 @@ def train_classifier(
     training_time = perf_counter() - started
     if best_state is None:
         raise RuntimeError(f"{model_name} training did not produce a checkpoint")
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_name": model_name,
-            "input_dim": int(training_features.shape[1]),
-            "state_dict": best_state,
-            "feature_mean": torch.from_numpy(mean.squeeze(0)).float(),
-            "feature_std": torch.from_numpy(standard_deviation.squeeze(0)).float(),
-            "training_time_seconds": training_time,
-            "best_validation_macro_f1": best_score,
-            "epochs_completed": len(history["train_loss"]),
-            "seed": seed,
-            "labels": list(ACTIVITY_LABELS),
-            "label_to_index": dict(LABEL_TO_INDEX),
-            "frames_per_sample": int((manifest_metadata or {}).get("frames_per_sample", 16)),
-            **(
-                {"sampling_interval_seconds": manifest_metadata["sampling_interval_seconds"]}
-                if manifest_metadata and "sampling_interval_seconds" in manifest_metadata
-                else {}
-            ),
-        },
-        checkpoint_path,
-    )
+    ensure_private_directory(checkpoint_path.parent)
+    with atomic_output(checkpoint_path) as temporary_checkpoint:
+        torch.save(
+            {
+                "model_name": model_name,
+                "input_dim": int(training_features.shape[1]),
+                "state_dict": best_state,
+                "feature_mean": torch.from_numpy(mean.squeeze(0)).float(),
+                "feature_std": torch.from_numpy(standard_deviation.squeeze(0)).float(),
+                "training_time_seconds": training_time,
+                "best_validation_macro_f1": best_score,
+                "epochs_completed": len(history["train_loss"]),
+                "seed": seed,
+                "labels": list(ACTIVITY_LABELS),
+                "label_to_index": dict(LABEL_TO_INDEX),
+                "frames_per_sample": int((manifest_metadata or {}).get("frames_per_sample", 16)),
+                **(
+                    {"sampling_interval_seconds": manifest_metadata["sampling_interval_seconds"]}
+                    if manifest_metadata and "sampling_interval_seconds" in manifest_metadata
+                    else {}
+                ),
+            },
+            temporary_checkpoint,
+        )
     return TrainingResult(
         model_name=model_name,
         checkpoint_path=checkpoint_path,

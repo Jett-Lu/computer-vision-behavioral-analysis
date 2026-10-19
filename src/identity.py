@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from data_policy import _safe_path, safe_file_path
 from typing import Sequence
 
 import cv2
@@ -165,16 +166,18 @@ class OpenCVFaceIdentifier:
         self.recognizer = cv2.FaceRecognizerSF.create(str(recognizer_model_path), "")
 
     def load_enrollments(self, enrollments_dir: Path) -> list[KnownIdentity]:
+        enrollments_dir = _safe_path(enrollments_dir)
         if not enrollments_dir.exists():
             return []
 
         identities: list[KnownIdentity] = []
         for person_dir in sorted(path for path in enrollments_dir.iterdir() if path.is_dir()):
+            person_dir = _safe_path(person_dir)
             for image_path in sorted(person_dir.iterdir()):
                 if image_path.suffix.lower() not in IMAGE_EXTENSIONS:
                     continue
 
-                image = cv2.imread(str(image_path))
+                image = cv2.imread(str(safe_file_path(image_path)))
                 if image is None:
                     logger.warning("Could not read enrollment image: %s", image_path)
                     continue

@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from urllib.request import Request, urlopen
-import os
 import shutil
 import time
 
 from config import AppConfig
+from data_policy import atomic_output, ensure_private_directory, safe_file_path
 from logging_setup import get_logger
 
 
@@ -82,6 +82,7 @@ def ensure_models(specs: tuple[ModelSpec, ...], config: AppConfig) -> None:
 
 def ensure_model(spec: ModelSpec, config: AppConfig) -> Path:
     """Return a verified model path, downloading atomically when permitted."""
+    safe_file_path(spec.path)
     verification_error: OSError | None = None
     if spec.path.exists():
         try:
@@ -97,14 +98,13 @@ def ensure_model(spec: ModelSpec, config: AppConfig) -> Path:
         ) from verification_error
 
     try:
-        spec.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(spec.path.parent)
     except OSError as exc:
         raise ModelUnavailableError(
             f"Could not create the model directory for {spec.name}: {spec.path.parent}"
         ) from exc
     last_error: Exception | None = None
     for attempt in range(1, config.model_download_attempts + 1):
-        temporary_path = spec.path.with_name(f"{spec.path.name}.download-{os.getpid()}")
         try:
             logger.info(
                 "Downloading %s (attempt %s/%s)",
@@ -112,19 +112,19 @@ def ensure_model(spec: ModelSpec, config: AppConfig) -> Path:
                 attempt,
                 config.model_download_attempts,
             )
-            request = Request(spec.url, headers={"User-Agent": "monitoring-poc/1.0"})
-            with urlopen(request, timeout=config.model_download_timeout_seconds) as response:
-                with temporary_path.open("wb") as destination:
-                    shutil.copyfileobj(response, destination)
+            with atomic_output(spec.path) as temporary_path:
+                request = Request(spec.url, headers={"User-Agent": "monitoring-poc/1.0"})
+                with urlopen(request, timeout=config.model_download_timeout_seconds) as response:
+                    with temporary_path.open("wb") as destination:
+                        shutil.copyfileobj(response, destination)
 
-            actual_hash = file_sha256(temporary_path)
-            if actual_hash != spec.sha256:
-                raise ModelUnavailableError(
-                    f"Checksum mismatch for {spec.name}: expected {spec.sha256}, "
-                    f"received {actual_hash}."
-                )
+                actual_hash = file_sha256(temporary_path)
+                if actual_hash != spec.sha256:
+                    raise ModelUnavailableError(
+                        f"Checksum mismatch for {spec.name}: expected {spec.sha256}, "
+                        f"received {actual_hash}."
+                    )
 
-            os.replace(temporary_path, spec.path)
             logger.info("Model installed: %s", spec.path)
             return spec.path
         except Exception as exc:
@@ -132,8 +132,6 @@ def ensure_model(spec: ModelSpec, config: AppConfig) -> Path:
             logger.warning("Could not provision %s: %s", spec.name, exc)
             if attempt < config.model_download_attempts:
                 time.sleep(min(2 ** (attempt - 1), 4))
-        finally:
-            temporary_path.unlink(missing_ok=True)
 
     raise ModelUnavailableError(
         f"Could not prepare {spec.name} at {spec.path}. Last error: {last_error}"

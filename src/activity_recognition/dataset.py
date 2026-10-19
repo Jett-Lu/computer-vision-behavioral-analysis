@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import shutil
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
+from data_policy import ensure_private_directory, atomic_output, _safe_path
 from typing import Any, Iterable
 from urllib.error import URLError
 from urllib.parse import quote
@@ -74,9 +74,9 @@ def build_hmdb51_fold(
     """Build train/validation/test records from an official HMDB51 fold."""
     if fold not in {1, 2, 3}:
         raise ValueError("HMDB51 fold must be 1, 2, or 3")
-    dataset_root = dataset_root.resolve()
+    dataset_root = _safe_path(dataset_root)
     annotations_root = annotations_root.resolve()
-    cache_root = cache_root.resolve()
+    cache_root = _safe_path(cache_root)
     samples: list[ActivitySample] = []
 
     for hmdb_class, activity_label in HMDB51_TO_ACTIVITY.items():
@@ -123,8 +123,8 @@ def build_hmdb51_metadata_fold(
     seed: int = 2026,
 ) -> list[ActivitySample]:
     """Build fold-1 records from mirror metadata preserving its test split."""
-    dataset_root = dataset_root.resolve()
-    cache_root = cache_root.resolve()
+    dataset_root = _safe_path(dataset_root)
+    cache_root = _safe_path(cache_root)
     training_rows = _read_metadata_csv(training_metadata_path)
     test_rows = _read_metadata_csv(test_metadata_path)
     samples: list[ActivitySample] = []
@@ -178,7 +178,7 @@ def download_hmdb51_subset(
     overwrite: bool = False,
 ) -> dict[str, int]:
     """Download only the four target classes listed by fold-1 metadata."""
-    dataset_root = dataset_root.resolve()
+    dataset_root = _safe_path(dataset_root)
     rows = [
         row
         for metadata_path in metadata_paths
@@ -192,22 +192,20 @@ def download_hmdb51_subset(
         if output_path.is_file() and not overwrite:
             skipped += 1
             continue
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = output_path.with_name(f"{output_path.name}.partial")
+        ensure_private_directory(output_path.parent)
         url = f"{base_url.rstrip('/')}/{quote(row['file_name'], safe='/')}?download=true"
         request = Request(url, headers={"User-Agent": "activity-benchmark/1.0"})
         try:
-            with urlopen(request, timeout=60) as response:
-                with temporary_path.open("wb") as destination:
-                    shutil.copyfileobj(response, destination)
-            if temporary_path.stat().st_size == 0:
-                raise RuntimeError("download was empty")
-            os.replace(temporary_path, output_path)
+            with atomic_output(output_path) as temporary_path:
+                with urlopen(request, timeout=60) as response:
+                    with temporary_path.open("wb") as destination:
+                        shutil.copyfileobj(response, destination)
+                if temporary_path.stat().st_size == 0:
+                    raise RuntimeError("download was empty")
             downloaded += 1
             print(f"[{position}/{len(rows)}] downloaded {relative_path}")
         except (OSError, RuntimeError, URLError) as exc:
             failed += 1
-            temporary_path.unlink(missing_ok=True)
             print(f"[{position}/{len(rows)}] failed {relative_path}: {exc}")
     return {"downloaded": downloaded, "skipped": skipped, "failed": failed}
 
@@ -224,7 +222,7 @@ def write_manifest(
     frames_per_sample: int,
     sampling_interval_seconds: float = DEFAULT_SAMPLING_INTERVAL_SECONDS,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(path.parent)
     payload = {
         "version": MANIFEST_VERSION,
         "dataset": "HMDB51",
@@ -239,9 +237,8 @@ def write_manifest(
         "label_to_index": dict(LABEL_TO_INDEX),
         "samples": [asdict(sample) for sample in samples],
     }
-    temporary_path = path.with_suffix(f"{path.suffix}.partial")
-    temporary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(temporary_path, path)
+    with atomic_output(path) as temporary_path:
+        temporary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def load_manifest(path: Path) -> tuple[dict[str, Any], list[ActivitySample]]:
