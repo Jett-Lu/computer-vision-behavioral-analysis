@@ -46,6 +46,7 @@ class PersonRuntime:
     cached_face_box: tuple[int, int, int, int] | None = None
     last_face_seen_frame: int = -1
     last_seen_frame: int = 0
+    last_body_box: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -255,6 +256,7 @@ class MonitoringProcessor:
         if self._timestamp_origin is None:
             self._timestamp_origin = timestamp
         timestamp = max(0.0, timestamp - self._timestamp_origin)
+        self.event_recorder.advance_clock(timestamp, self.frame_count)
         annotated = frame.copy()
         self._update_fps()
 
@@ -265,6 +267,8 @@ class MonitoringProcessor:
         active_keys: set[int] = set()
         demo_override_active = False
         for detection_index, pose_result in enumerate(tracked_poses):
+            other_boxes = [p.box for i, p in enumerate(tracked_poses) if i != detection_index]
+            ambiguous = any(_body_overlap(pose_result.box, box) >= 0.25 for box in other_boxes)
             track_key = _track_key(
                 pose_result.track_id,
                 detection_index,
@@ -272,13 +276,27 @@ class MonitoringProcessor:
             )
             active_keys.add(track_key)
             runtime = self.person_states.get(track_key)
-            if runtime is None:
+            discontinuous = runtime is not None and (
+                self.frame_count - runtime.last_seen_frame > 1
+                or (
+                    runtime.last_body_box is not None
+                    and _body_overlap(runtime.last_body_box, pose_result.box) == 0
+                )
+            )
+            if runtime is None or discontinuous or ambiguous:
+                if runtime is not None and self.activity_recognizer is not None:
+                    self.activity_recognizer.remove_track(track_key)
                 runtime = self._new_person_runtime()
                 self.person_states[track_key] = runtime
             runtime.last_seen_frame = self.frame_count
+            runtime.last_body_box = pose_result.box
 
             activity_prediction = None
-            if self.activity_recognizer is not None and pose_result.track_id is not None:
+            if (
+                self.activity_recognizer is not None
+                and pose_result.track_id is not None
+                and not ambiguous
+            ):
                 with self.timer("activity"):
                     activity_prediction = self.activity_recognizer.update(
                         track_key,
@@ -292,12 +310,13 @@ class MonitoringProcessor:
             wave_state = runtime.wave_monitor.update(
                 pose_result.landmarks,
                 timestamp,
+                frame_shape=frame.shape,
             )
 
             context_activated = False
             if self.frame_count % self.config.expression_interval_frames == 0:
                 detected_emotion = None
-                if self.emotion_analyzer is not None:
+                if self.emotion_analyzer is not None and not ambiguous:
                     with self.timer("emotion"):
                         detected_emotion = self.emotion_analyzer.analyze(
                             frame,
@@ -325,8 +344,9 @@ class MonitoringProcessor:
                     identity_interval_frames=(
                         1 if force_identity else self.config.identity_interval_frames
                     ),
-                    identity_matcher=self.identity_matcher,
+                    identity_matcher=None if ambiguous else self.identity_matcher,
                     known_identities=self.known_identities,
+                    other_person_boxes=other_boxes,
                 )
 
             demo_override = (
@@ -374,6 +394,12 @@ class MonitoringProcessor:
                 wave_detected=wave_state.wave_detected,
                 expression_label=review_state.concern_label,
                 expression_context_strength=review_state.concern_strength,
+                display_expression_label=(
+                    None if runtime.cached_emotion is None else runtime.cached_emotion.display_label
+                ),
+                display_expression_confidence=(
+                    None if runtime.cached_emotion is None else runtime.cached_emotion.confidence
+                ),
                 demo_override=demo_override,
                 activity_label=(None if activity_prediction is None else activity_prediction.label),
                 activity_confidence=(
@@ -384,6 +410,9 @@ class MonitoringProcessor:
             if pose_result.track_id is not None:
                 self.event_recorder.record(snapshot, timestamp, self.frame_count)
 
+        for track_key in self.person_states.keys() - active_keys:
+            if track_key >= 0:
+                self.event_recorder.mark_unavailable(track_key, timestamp, self.frame_count)
         stale_keys = _discard_stale_tracks(
             self.person_states,
             self.frame_count,
@@ -620,6 +649,14 @@ def _discard_stale_tracks(
     return stale_keys
 
 
+def _body_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(
+        0, min(a[3], b[3]) - max(a[1], b[1])
+    )
+    minimum_area = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return intersection / minimum_area if minimum_area > 0 else 0.0
+
+
 def _resolve_identity_overlay(
     frame: Any,
     person_box: tuple[int, int, int, int],
@@ -628,19 +665,38 @@ def _resolve_identity_overlay(
     identity_interval_frames: int,
     identity_matcher: OpenCVFaceIdentifier | None,
     known_identities: Sequence[KnownIdentity],
+    other_person_boxes: Sequence[tuple[int, int, int, int]] = (),
 ) -> IdentityOverlay:
     fallback_box = runtime.cached_emotion.box if runtime.cached_emotion is not None else person_box
     if identity_matcher is None or not known_identities:
         label = _label_with_emotion("Person", None, runtime.cached_emotion)
         return IdentityOverlay("Person", fallback_box, label)
 
+    if runtime.cached_face_box is not None:
+        fx1, fy1, fx2, fy2 = runtime.cached_face_box
+        cx, cy = (fx1 + fx2) / 2, (fy1 + fy2) / 2
+        if any(bx1 <= cx <= bx2 and by1 <= cy <= by2 for bx1, by1, bx2, by2 in other_person_boxes):
+            runtime.identity_consensus.clear()
+            runtime.cached_face_box = None
+            return IdentityOverlay(
+                "Person", fallback_box, _label_with_emotion("Person", None, runtime.cached_emotion)
+            )
     due = runtime.cached_face_box is None or frame_number % identity_interval_frames == 0
     if due:
         x1, y1, x2, y2 = person_box
         cropped_img = frame[y1:y2, x1:x2]
-        detected_face = (
-            None if cropped_img.size == 0 else identity_matcher.detect_largest_face(cropped_img)
-        )
+        faces = [] if cropped_img.size == 0 else identity_matcher.detect_faces(cropped_img)
+        detected_face = faces[0] if len(faces) == 1 else None
+        if len(faces) > 1:
+            runtime.identity_consensus.clear()
+        if detected_face is not None:
+            fx1, fy1, fx2, fy2 = offset_box(detected_face.box, x1, y1)
+            cx, cy = (fx1 + fx2) / 2, (fy1 + fy2) / 2
+            if any(
+                bx1 <= cx <= bx2 and by1 <= cy <= by2 for bx1, by1, bx2, by2 in other_person_boxes
+            ):
+                runtime.identity_consensus.clear()
+                detected_face = None
         if detected_face is None:
             runtime.cached_face_box = None
             runtime.identity_consensus.observe(None, frame_number)
@@ -654,6 +710,8 @@ def _resolve_identity_overlay(
                     detected_face,
                     known_identities,
                 )
+            else:
+                runtime.cached_face_box = None
             runtime.identity_consensus.observe(match, frame_number)
 
     decision = runtime.identity_consensus.current(frame_number)

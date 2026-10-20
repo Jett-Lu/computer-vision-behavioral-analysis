@@ -23,7 +23,7 @@ dependencies = [
 integrated-monitoring = "main:main"
 
 [tool.setuptools.package-data]
-monitoring_assets = ["*.tflite"]
+monitoring_assets = ["*.tflite", "*.yaml"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

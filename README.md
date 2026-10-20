@@ -16,6 +16,10 @@ recordings and identity data. See the
 [final production audit](docs/production-audit.md) for verification results
 and remaining release blockers.
 
+See [tracking and temporal attribution](docs/tracking-attribution.md) for
+ByteTrack thresholds, conservative identity handling, body-scale wave detection,
+JSONL lifecycle replay, and the limits of synthetic regression validation.
+
 <img width="1069" height="598" alt="image" src="https://github.com/user-attachments/assets/98c651a0-158e-46c2-81f4-dbaf38517503" />
 
 ## Project Overview

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import math
 
 from pose import MoveNetKeypoint
 
@@ -19,8 +20,10 @@ class RightHandWaveMonitor:
     event_window_seconds: float = 30.0
     motion_window_seconds: float = 2.5
     event_cooldown_seconds: float = 0.8
-    horizontal_movement_threshold: float = 0.045
-    raised_hand_margin: float = 0.05
+    horizontal_movement_threshold: float = 0.25
+    raised_hand_margin: float = 0.15
+    max_observation_gap_seconds: float = 0.5
+    _last_timestamp: float | None = field(default=None, init=False)
     _events: deque[float] = field(default_factory=deque, init=False)
     _anchor_x: float | None = field(default=None, init=False)
     _last_direction: int | None = field(default=None, init=False)
@@ -31,19 +34,38 @@ class RightHandWaveMonitor:
         self,
         landmarks: dict[int, tuple[float, float]],
         timestamp: float,
+        frame_shape: tuple[int, ...] | None = None,
     ) -> WaveAlertState:
         self._discard_expired_events(timestamp)
+        if not math.isfinite(timestamp):
+            self._reset_motion()
+            return self._state(wave_detected=False)
+        if self._last_timestamp is not None and (
+            timestamp <= self._last_timestamp
+            or timestamp - self._last_timestamp > self.max_observation_gap_seconds
+        ):
+            self._reset_motion()
+        self._last_timestamp = timestamp
 
         right_wrist = landmarks.get(MoveNetKeypoint.RIGHT_WRIST)
         right_shoulder = landmarks.get(MoveNetKeypoint.RIGHT_SHOULDER)
-        if right_wrist is None or right_shoulder is None:
+        left_shoulder = landmarks.get(MoveNetKeypoint.LEFT_SHOULDER)
+        if right_wrist is None or right_shoulder is None or left_shoulder is None:
             self._reset_motion()
             return self._state(wave_detected=False)
 
         wrist_x, wrist_y = right_wrist
         shoulder_x, shoulder_y = right_shoulder
-        wrist_x -= shoulder_x
-        if wrist_y > shoulder_y + self.raised_hand_margin:
+        aspect = frame_shape[1] / frame_shape[0] if frame_shape is not None else 1.0
+        scale = math.hypot((left_shoulder[0] - shoulder_x) * aspect, left_shoulder[1] - shoulder_y)
+        if (
+            not all(math.isfinite(v) for v in (*right_wrist, *right_shoulder, *left_shoulder))
+            or scale < 1e-4
+        ):
+            self._reset_motion()
+            return self._state(wave_detected=False)
+        wrist_x = (wrist_x - shoulder_x) * aspect / scale
+        if (wrist_y - shoulder_y) / scale > self.raised_hand_margin:
             self._reset_motion()
             return self._state(wave_detected=False)
 

@@ -7,6 +7,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+import monitoring_assets
 
 from config import DEFAULT_CONFIG, AppConfig
 from dependency_privacy import disable_ultralytics_telemetry
@@ -14,6 +15,7 @@ from model_manager import ensure_model, pose_model_spec
 
 
 DEFAULT_MODEL_PATH = DEFAULT_CONFIG.pose_model_path
+TRACKER_CONFIG_PATH = Path(monitoring_assets.__file__).parent / "bytetrack.yaml"
 MIN_KEYPOINT_SCORE = 0.3
 DEFAULT_SKELETON_COLOR = (0, 255, 0)
 
@@ -84,6 +86,11 @@ class PoseAnalyzer:
             raise FileNotFoundError(f"Pose model not found: {model_path}")
 
         self.confidence = config.pose_confidence
+        self.detection_confidence = config.pose_detection_confidence
+        if not 0 < self.detection_confidence <= 0.10:
+            raise ValueError(
+                "Pose candidate confidence must be in (0, 0.10] for ByteTrack recovery"
+            )
         self.iou = config.pose_iou
         self.min_keypoint_confidence = config.min_keypoint_confidence
         self.model = YOLO(str(model_path))
@@ -91,12 +98,12 @@ class PoseAnalyzer:
     def analyze(self, frame: np.ndarray) -> list[PoseResult]:
         results = self.model.track(
             frame,
-            conf=self.confidence,
+            conf=self.detection_confidence,
             iou=self.iou,
             verbose=False,
             classes=[0],
             persist=True,
-            tracker="bytetrack.yaml",
+            tracker=str(TRACKER_CONFIG_PATH),
             stream=False,
         )
         # Ultralytics versions annotate track() as either a list or an iterator.
@@ -112,6 +119,9 @@ class PoseAnalyzer:
         height, width = frame.shape[:2]
         tracked_poses: list[PoseResult] = []
         for index in range(len(boxes)):
+            # Filtering happens after association, so hidden candidates can keep IDs alive.
+            if float(boxes.conf[index].item()) < self.confidence:
+                continue
             track_id = None if boxes.id is None else int(boxes.id[index].item())
             landmarks = self.landmarks_from_keypoints(
                 keypoints.xy[index],

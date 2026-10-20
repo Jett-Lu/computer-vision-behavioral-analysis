@@ -95,6 +95,12 @@ class UntrackedPoseAnalyzer(FakePoseAnalyzer):
 
 
 class RecordingEventRecorder:
+    def advance_clock(self, timestamp, frame_number):
+        return None
+
+    def mark_unavailable(self, track_key, timestamp, frame_number):
+        return None
+
     def __init__(self) -> None:
         self.recorded = []
         self.recent_messages = ()

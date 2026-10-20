@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from logging_setup import get_logger
 from data_policy import open_private_append
@@ -31,6 +32,9 @@ class TrackSnapshot:
     activity_label: str | None = None
     activity_confidence: float | None = None
     wave_detected: bool = False
+    visible: bool = True
+    display_expression_label: str | None = None
+    display_expression_confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,10 @@ class EventRecorder:
         self._previous: dict[int, TrackSnapshot] = {}
         self._recent_messages: deque[str] = deque(maxlen=max(1, recent_limit))
         self._context: dict[str, Any] = {}
+        self._session_id = uuid4().hex
+        self._sequence = 0
+        self._last_time = 0.0
+        self._last_frame = 0
         if output_path is not None:
             self._stream = open_private_append(output_path)
             logger.info("Event report: %s", output_path)
@@ -72,6 +80,11 @@ class EventRecorder:
     def recent_messages(self) -> tuple[str, ...]:
         return tuple(self._recent_messages)
 
+    def advance_clock(self, timestamp_seconds: float, frame_number: int) -> None:
+        """Retain source time even when a frame has no visible tracks."""
+        self._last_time = timestamp_seconds
+        self._last_frame = frame_number
+
     def record(
         self,
         snapshot: TrackSnapshot,
@@ -79,6 +92,18 @@ class EventRecorder:
         frame_number: int,
     ) -> None:
         previous = self._previous.get(snapshot.track_key)
+        self._last_time = timestamp_seconds
+        self._last_frame = frame_number
+        sequence_before = self._sequence
+        if previous is not None and not previous.visible and snapshot.visible:
+            self._emit(
+                "track_available",
+                snapshot,
+                timestamp_seconds,
+                frame_number,
+                {},
+                f"Track {snapshot.track_key} available",
+            )
         if previous is None:
             self._emit(
                 "track_started",
@@ -165,23 +190,91 @@ class EventRecorder:
                     {},
                     f"Track {snapshot.track_key}: DEMO override",
                 )
-            if (
-                snapshot.activity_label is not None
-                and snapshot.activity_label != previous.activity_label
-            ):
+            if snapshot.activity_label != previous.activity_label:
                 self._emit_activity_change(
                     snapshot,
                     previous.activity_label,
                     timestamp_seconds,
                     frame_number,
                 )
+            if (
+                self.identity_enabled
+                and previous.identity_confirmed
+                and not snapshot.identity_confirmed
+            ):
+                self._emit(
+                    "identity_cleared",
+                    snapshot,
+                    timestamp_seconds,
+                    frame_number,
+                    {"reason": "unavailable_or_unconfirmed"},
+                    f"Track {snapshot.track_key}: identity cleared",
+                )
+            if self.expression_enabled and (
+                (previous.expression_label is not None and snapshot.expression_label is None)
+                or (
+                    previous.display_expression_label is not None
+                    and snapshot.display_expression_label is None
+                )
+            ):
+                self._emit(
+                    "expression_cleared",
+                    snapshot,
+                    timestamp_seconds,
+                    frame_number,
+                    {"label": None, "strength": 0.0},
+                    f"Track {snapshot.track_key}: expression cleared",
+                )
+        if (
+            previous is not None
+            and self._sequence == sequence_before
+            and self._display_state(previous) != self._display_state(snapshot)
+        ):
+            self._emit(
+                "state_updated",
+                snapshot,
+                timestamp_seconds,
+                frame_number,
+                {},
+                f"Track {snapshot.track_key}: state updated",
+            )
         self._previous[snapshot.track_key] = snapshot
+
+    def mark_unavailable(self, track_key: int, timestamp_seconds: float, frame_number: int) -> None:
+        previous = self._previous.get(track_key)
+        if previous is None or not previous.visible:
+            return
+        cleared = replace(
+            previous,
+            visible=False,
+            identity_name="Person",
+            identity_score=None,
+            identity_confirmed=False,
+            expression_label=None,
+            expression_context_strength=0,
+            activity_label=None,
+            activity_confidence=None,
+            wave_detected=False,
+            demo_override=False,
+            display_expression_label=None,
+            display_expression_confidence=None,
+        )
+        self.record(cleared, timestamp_seconds, frame_number)
+        self._emit(
+            "track_unavailable",
+            cleared,
+            timestamp_seconds,
+            frame_number,
+            {},
+            f"Track {track_key} unavailable",
+        )
 
     def end_track(
         self,
         track_key: int,
         timestamp_seconds: float,
         frame_number: int,
+        reason: str = "tracker_terminated",
     ) -> None:
         previous = self._previous.pop(track_key, None)
         if previous is None:
@@ -191,20 +284,41 @@ class EventRecorder:
             previous,
             timestamp_seconds,
             frame_number,
-            {},
+            {"reason": reason},
             f"Track {track_key} ended",
         )
 
     def close(self) -> None:
+        self._end_all("shutdown")
         if self._stream is not None:
             self._stream.close()
             self._stream = None
 
     def reset_tracks(self, **context: Any) -> None:
         """Start a new source within the same report without reloading models."""
-        self._previous.clear()
+        self._end_all("source_reset")
+        self._session_id = uuid4().hex
+        self._last_time = 0.0
+        self._last_frame = 0
         self._recent_messages.clear()
         self._context = dict(context)
+
+    def _end_all(self, reason: str) -> None:
+        for key in list(self._previous):
+            self.end_track(key, self._last_time, self._last_frame, reason)
+
+    def _display_state(self, snapshot: TrackSnapshot) -> dict[str, Any]:
+        state = asdict(snapshot)
+        state.pop("wave_detected")
+        if not self.identity_enabled:
+            for key in ("identity_name", "identity_score", "identity_confirmed", "demo_override"):
+                state.pop(key)
+        if not self.expression_enabled:
+            state.pop("expression_label")
+            state.pop("expression_context_strength")
+            state.pop("display_expression_label")
+            state.pop("display_expression_confidence")
+        return state
 
     def _emit(
         self,
@@ -227,6 +341,7 @@ class EventRecorder:
             activity_confidence=snapshot.activity_confidence,
         )
         self._recent_messages.append(message)
+        self._sequence += 1
         if self._stream is not None:
             payload = asdict(event)
             if not self.identity_enabled:
@@ -236,6 +351,12 @@ class EventRecorder:
                 payload.pop("activity_confidence")
             payload["recorded_at"] = datetime.now(timezone.utc).isoformat()
             payload["context"] = self._context
+            payload["schema_version"] = 2
+            payload["session_id"] = self._session_id
+            payload["sequence"] = self._sequence
+            payload["state"] = self._display_state(snapshot)
+            if event_type == "track_ended":
+                payload["state"]["visible"] = False
             self._stream.write(json.dumps(payload, sort_keys=True) + "\n")
             self._stream.flush()
 
@@ -247,7 +368,7 @@ class EventRecorder:
         frame_number: int,
     ) -> None:
         self._emit(
-            "activity_changed",
+            "activity_changed" if snapshot.activity_label is not None else "activity_unavailable",
             snapshot,
             timestamp_seconds,
             frame_number,

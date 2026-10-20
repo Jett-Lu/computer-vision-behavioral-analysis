@@ -40,7 +40,7 @@ class EventRecorderTest(unittest.TestCase):
 
         self.assertEqual(
             [event["event_type"] for event in events],
-            ["track_started", "tier_changed", "wave_counted"],
+            ["track_started", "tier_changed", "wave_counted", "track_ended"],
         )
         self.assertNotIn("activity_label", events[0])
         self.assertNotIn("activity_confidence", events[0])
@@ -73,7 +73,11 @@ class EventRecorderTest(unittest.TestCase):
             )
             recorder.close()
 
-            event = json.loads(path.read_text().splitlines()[-1])
+            event = next(
+                event
+                for line in path.read_text().splitlines()
+                if (event := json.loads(line))["event_type"] == "expression_changed"
+            )
 
         self.assertEqual(event["event_type"], "expression_changed")
         self.assertEqual(event["details"], {"label": "Anger", "strength": 0.3})

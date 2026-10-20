@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pose import PoseAnalyzer, PoseResult, _clamp_box
+from pose import PoseAnalyzer, PoseResult, _clamp_box, TRACKER_CONFIG_PATH
 
 
 class PoseAnalyzerOverlayTest(unittest.TestCase):
@@ -23,6 +23,7 @@ class PoseAnalyzerOverlayTest(unittest.TestCase):
 
         class Boxes:
             id = np.array([7])
+            conf = np.array([0.9])
             xyxy = np.array([[-10, 5, 120, 90]])
 
             def __len__(self):
@@ -34,6 +35,7 @@ class PoseAnalyzerOverlayTest(unittest.TestCase):
                 analyzer = PoseAnalyzer.__new__(PoseAnalyzer)
                 analyzer.model = Mock()
                 analyzer.model.track.return_value = results
+                analyzer.detection_confidence = 0.1
                 analyzer.confidence = 0.3
                 analyzer.iou = 0.45
                 analyzer.min_keypoint_confidence = 0.3
@@ -43,13 +45,20 @@ class PoseAnalyzerOverlayTest(unittest.TestCase):
                 )
                 self.assertFalse(analyzer.model.track.call_args.kwargs["stream"])
                 self.assertTrue(analyzer.model.track.call_args.kwargs["persist"])
-                self.assertEqual(analyzer.model.track.call_args.kwargs["tracker"], "bytetrack.yaml")
+                self.assertEqual(analyzer.model.track.call_args.kwargs["conf"], 0.1)
+                self.assertEqual(
+                    analyzer.model.track.call_args.kwargs["tracker"], str(TRACKER_CONFIG_PATH)
+                )
+        result.boxes.conf = np.array([0.15])
+        analyzer.model.track.return_value = [result]
+        self.assertEqual(analyzer.analyze(np.zeros((80, 100, 3), np.uint8)), [])
 
     def test_analyze_accepts_empty_result_iterables(self) -> None:
         for results in ([], iter([])):
             analyzer = PoseAnalyzer.__new__(PoseAnalyzer)
             analyzer.model = Mock()
             analyzer.model.track.return_value = results
+            analyzer.detection_confidence = 0.1
             analyzer.confidence = 0.3
             analyzer.iou = 0.45
             self.assertEqual(analyzer.analyze(np.zeros((80, 100, 3), np.uint8)), [])

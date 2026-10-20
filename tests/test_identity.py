@@ -85,7 +85,7 @@ class IdentityConsensusTest(unittest.TestCase):
         self.assertEqual(conflicted.name, "Unknown")
 
     def test_failed_observations_do_not_extend_identity_expiry(self) -> None:
-        for failed_match in (None, IdentityMatch("Unknown", 0.20, False)):
+        for failed_match in (None,):
             with self.subTest(failed_match=failed_match):
                 consensus = IdentityConsensus(ttl_frames=5)
                 match = IdentityMatch("Alex", 0.70, True)

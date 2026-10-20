@@ -112,6 +112,7 @@ class AppConfig:
     min_expression_display_confidence: float = 0.45
 
     pose_confidence: float = 0.30
+    pose_detection_confidence: float = 0.10
     pose_iou: float = 0.45
     min_keypoint_confidence: float = 0.30
 
@@ -194,6 +195,9 @@ class AppConfig:
                 "MONITOR_EXPRESSION_DISPLAY_CONFIDENCE", 0.45, maximum=1.0
             ),
             pose_confidence=_env_float("MONITOR_POSE_CONFIDENCE", 0.30, maximum=1.0),
+            pose_detection_confidence=_env_float(
+                "MONITOR_POSE_DETECTION_CONFIDENCE", 0.10, minimum=0.01, maximum=0.10
+            ),
             pose_iou=_env_float("MONITOR_POSE_IOU", 0.45, maximum=1.0),
             min_keypoint_confidence=_env_float("MONITOR_KEYPOINT_CONFIDENCE", 0.30, maximum=1.0),
             activity_model=_env_choice(

@@ -63,6 +63,7 @@ class IdentityConsensus:
     _confirmed_name: str | None = field(default=None, init=False)
     _confirmed_score: float | None = field(default=None, init=False)
     _last_confirmed_frame: int | None = field(default=None, init=False)
+    _last_observation_frame: int | None = field(default=None, init=False)
     _suspended: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -80,6 +81,16 @@ class IdentityConsensus:
     ) -> IdentityDecision:
         # Expire cached evidence before a new observation can renew it.
         self.current(frame_number)
+        if match is None:
+            # No usable observation is not negative recognition evidence.
+            return self.current(frame_number)
+        if not match.matched:
+            self.clear()
+            return self.current(frame_number)
+        previous_candidate = next((name for name, _ in reversed(self._observations) if name), None)
+        if previous_candidate is not None and match.name != previous_candidate:
+            # Neither confirmed nor pending votes may cross a contradictory observation.
+            self.clear()
         accepted_name = match.name if match is not None and match.matched else None
         accepted_score = match.score if match is not None and accepted_name is not None else None
         if (
@@ -91,6 +102,7 @@ class IdentityConsensus:
         elif accepted_name == self._confirmed_name and accepted_name is not None:
             self._suspended = False
         self._observations.append((accepted_name, accepted_score))
+        self._last_observation_frame = frame_number
         while len(self._observations) > self.window_size:
             self._observations.popleft()
 
@@ -114,6 +126,11 @@ class IdentityConsensus:
 
     def current(self, frame_number: int) -> IdentityDecision:
         if (
+            self._last_observation_frame is not None
+            and frame_number - self._last_observation_frame > self.ttl_frames
+        ):
+            self.clear()
+        if (
             self._confirmed_name is not None
             and self._last_confirmed_frame is not None
             and frame_number - self._last_confirmed_frame > self.ttl_frames
@@ -131,6 +148,7 @@ class IdentityConsensus:
         self._confirmed_name = None
         self._confirmed_score = None
         self._last_confirmed_frame = None
+        self._last_observation_frame = None
         self._suspended = False
 
 

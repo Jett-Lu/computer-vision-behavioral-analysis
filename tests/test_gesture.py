@@ -14,6 +14,7 @@ from pose import MoveNetKeypoint
 def raised_right_hand(x: float) -> dict[int, tuple[float, float]]:
     return {
         MoveNetKeypoint.RIGHT_SHOULDER: (0.50, 0.50),
+        MoveNetKeypoint.LEFT_SHOULDER: (0.30, 0.50),
         MoveNetKeypoint.RIGHT_WRIST: (x, 0.35),
     }
 
@@ -21,6 +22,7 @@ def raised_right_hand(x: float) -> dict[int, tuple[float, float]]:
 def low_right_hand(x: float) -> dict[int, tuple[float, float]]:
     return {
         MoveNetKeypoint.RIGHT_SHOULDER: (0.50, 0.50),
+        MoveNetKeypoint.LEFT_SHOULDER: (0.30, 0.50),
         MoveNetKeypoint.RIGHT_WRIST: (x, 0.70),
     }
 
@@ -37,6 +39,7 @@ class RightHandWaveMonitorTest(unittest.TestCase):
             state = monitor.update(
                 {
                     MoveNetKeypoint.RIGHT_SHOULDER: (x, 0.5),
+                    MoveNetKeypoint.LEFT_SHOULDER: (x - 0.2, 0.5),
                     MoveNetKeypoint.RIGHT_WRIST: (x + 0.1, 0.3),
                 },
                 index * 0.3,
