@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import math
 import os
@@ -79,6 +79,41 @@ def _env_path(name: str, default: Path, root: Path = PROJECT_ROOT) -> Path:
 
 
 @dataclass(frozen=True)
+class OverlayConfig:
+    """Display-only options; never used for inference or attribution."""
+
+    boxes: bool = True
+    skeletons: bool = True
+    track_ids: bool = True
+    labels: bool = True
+    activity: bool = True
+    trails: bool = False
+    hud: bool = True
+    line_thickness: int = 2
+    text_scale: float = 1.0
+    panel_alpha: float = 0.82
+    trail_points: int = 30
+    trail_seconds: float = 2.0
+
+    @classmethod
+    def from_env(cls) -> "OverlayConfig":
+        return cls(
+            boxes=_env_bool("MONITOR_OVERLAY_BOXES", True),
+            skeletons=_env_bool("MONITOR_OVERLAY_SKELETONS", True),
+            track_ids=_env_bool("MONITOR_OVERLAY_TRACK_IDS", True),
+            labels=_env_bool("MONITOR_OVERLAY_LABELS", True),
+            activity=_env_bool("MONITOR_OVERLAY_ACTIVITY", True),
+            trails=_env_bool("MONITOR_OVERLAY_TRAILS", False),
+            hud=_env_bool("MONITOR_OVERLAY_HUD", True),
+            line_thickness=min(8, _env_int("MONITOR_OVERLAY_LINE_THICKNESS", 2)),
+            text_scale=_env_float("MONITOR_OVERLAY_TEXT_SCALE", 1, minimum=0.5, maximum=2),
+            panel_alpha=_env_float("MONITOR_OVERLAY_PANEL_ALPHA", 0.82, maximum=1),
+            trail_points=min(300, _env_int("MONITOR_OVERLAY_TRAIL_POINTS", 30, minimum=2)),
+            trail_seconds=_env_float("MONITOR_OVERLAY_TRAIL_SECONDS", 2, minimum=0.1, maximum=30),
+        )
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Values that affect model loading, scoring, tracking, and reporting."""
 
@@ -115,6 +150,7 @@ class AppConfig:
     pose_detection_confidence: float = 0.10
     pose_iou: float = 0.45
     min_keypoint_confidence: float = 0.30
+    overlays: OverlayConfig = field(default_factory=OverlayConfig)
 
     activity_model: str = "none"
     activity_checkpoint_path: Path = PROJECT_ROOT / "data" / "activity_models" / "mlp.pt"
@@ -156,6 +192,7 @@ class AppConfig:
         """Create configuration with safe environment-variable overrides."""
         root = _runtime_root()
         return cls(
+            overlays=OverlayConfig.from_env(),
             recording_retention_days=_env_int("MONITOR_RECORDING_RETENTION_DAYS", 30),
             identity_retention_days=_env_int("MONITOR_IDENTITY_RETENTION_DAYS", 365),
             log_retention_days=_env_int("MONITOR_LOG_RETENTION_DAYS", 30),

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit, urlunsplit
@@ -25,13 +25,12 @@ from model_manager import (
     identity_model_specs,
 )
 from review import HIGH_COLOR, ReviewState
+from overlays import OverlayRenderer, RenderPerson
 
 TMP_DIR = DEFAULT_CONFIG.project_root / ".tmp"
 
 logger = get_logger("detection")
 _AUTO = object()
-GLOBAL_HUD_WIDTH = 520
-GLOBAL_HUD_MAX_HEIGHT = 60
 
 
 @dataclass
@@ -47,6 +46,7 @@ class PersonRuntime:
     last_face_seen_frame: int = -1
     last_seen_frame: int = 0
     last_body_box: tuple[int, int, int, int] | None = None
+    trail: deque[tuple[float, float, float]] = field(default_factory=deque)
 
 
 @dataclass(frozen=True)
@@ -264,8 +264,8 @@ class MonitoringProcessor:
             tracked_poses = self.pose_analyzer.analyze(frame)
 
         snapshots: list[TrackSnapshot] = []
+        render_people: list[RenderPerson] = []
         active_keys: set[int] = set()
-        demo_override_active = False
         for detection_index, pose_result in enumerate(tracked_poses):
             other_boxes = [p.box for i, p in enumerate(tracked_poses) if i != detection_index]
             ambiguous = any(_body_overlap(pose_result.box, box) >= 0.25 for box in other_boxes)
@@ -290,6 +290,17 @@ class MonitoringProcessor:
                 self.person_states[track_key] = runtime
             runtime.last_seen_frame = self.frame_count
             runtime.last_body_box = pose_result.box
+            if pose_result.track_id is not None:
+                x1, _, x2, y2 = pose_result.box
+                runtime.trail.append(
+                    (timestamp, (x1 + x2) / 2 / frame.shape[1], y2 / frame.shape[0])
+                )
+                while runtime.trail and (
+                    len(runtime.trail) > max(2, min(300, self.config.overlays.trail_points))
+                    or timestamp - runtime.trail[0][0]
+                    > max(0.1, min(30, self.config.overlays.trail_seconds))
+                ):
+                    runtime.trail.popleft()
 
             activity_prediction = None
             if (
@@ -313,7 +324,6 @@ class MonitoringProcessor:
                 frame_shape=frame.shape,
             )
 
-            context_activated = False
             if self.frame_count % self.config.expression_interval_frames == 0:
                 detected_emotion = None
                 if self.emotion_analyzer is not None and not ambiguous:
@@ -327,7 +337,7 @@ class MonitoringProcessor:
                     if runtime.emotion_smoother is not None
                     else None
                 )
-                context_activated = runtime.review_monitor.observe_expression(
+                runtime.review_monitor.observe_expression(
                     runtime.cached_emotion.label if runtime.cached_emotion is not None else None,
                     runtime.cached_emotion.confidence
                     if runtime.cached_emotion is not None
@@ -359,28 +369,6 @@ class MonitoringProcessor:
                     identity_overlay.name,
                     self.demo_high_review_names,
                 )
-            demo_override_active = demo_override_active or demo_override
-
-            with self.timer("render"):
-                self.pose_analyzer.draw_landmarks(
-                    annotated,
-                    pose_result.landmarks,
-                    review_state.color,
-                )
-                _draw_review_overlay(
-                    annotated,
-                    pose_result.box,
-                    review_state,
-                    wave_state.wave_detected,
-                    context_activated,
-                    (None if activity_prediction is None else activity_prediction.label),
-                    (None if activity_prediction is None else activity_prediction.confidence),
-                )
-                _draw_identity_overlay(
-                    annotated,
-                    identity_overlay,
-                    review_state.color,
-                )
 
             snapshot = TrackSnapshot(
                 track_key=track_key,
@@ -407,6 +395,9 @@ class MonitoringProcessor:
                 ),
             )
             snapshots.append(snapshot)
+            render_people.append(
+                RenderPerson(pose_result, snapshot, tuple((x, y) for _, x, y in runtime.trail))
+            )
             if pose_result.track_id is not None:
                 self.event_recorder.record(snapshot, timestamp, self.frame_count)
 
@@ -425,14 +416,17 @@ class MonitoringProcessor:
             self.event_recorder.end_track(track_key, timestamp, self.frame_count)
 
         self.last_snapshots = snapshots
-        _draw_global_hud(
-            annotated,
-            fps=self._fps,
-            person_count=len(snapshots),
-            identity_enabled=self.identity_enabled,
-            recent_events=self.event_recorder.recent_messages,
-            demo_override_active=demo_override_active,
-        )
+        with self.timer("render"):
+            OverlayRenderer(
+                self.config.overlays,
+                identity_enabled=self.config.identity_enabled,
+                expression_enabled=self.config.expression_enabled,
+            ).draw(
+                annotated,
+                render_people,
+                fps=self._fps,
+                recent_events=self.event_recorder.recent_messages,
+            )
         self.frame_count += 1
         self.timer.tick()
         return annotated
@@ -762,210 +756,6 @@ def _source_for_logging(source: object) -> str:
     except ValueError:
         port = ""
     return urlunsplit((parsed.scheme, f"{hostname}{port}", parsed.path, "", ""))
-
-
-def _draw_review_overlay(
-    frame: Any,
-    person_box: tuple[int, int, int, int],
-    review_state: ReviewState,
-    wave_detected: bool,
-    context_activated: bool,
-    activity_label: str | None = None,
-    activity_confidence: float | None = None,
-) -> None:
-    px1, py1, px2, py2 = person_box
-    cv2.rectangle(frame, (px1, py1), (px2, py2), review_state.color, 3)
-    status_lines = [review_state.tier_label]
-    if activity_label is not None and activity_confidence is not None:
-        status_lines.insert(
-            0,
-            f"Activity: {activity_label.title()} {activity_confidence:.0%}",
-        )
-    status_lines.append(
-        f"waves:{review_state.recent_wave_count} | context:{review_state.concern_strength:.0%}",
-    )
-    if review_state.concern_expression_active:
-        status_lines.append(f"{review_state.concern_label} {review_state.concern_strength:.0%}")
-    _draw_status_panel(
-        frame,
-        person_box,
-        status_lines,
-        review_state.color,
-        avoid_global_hud=activity_label is not None,
-    )
-
-    if wave_detected:
-        message = "Right-hand wave counted"
-    elif context_activated:
-        message = "Expression context active"
-    else:
-        return
-    cv2.putText(
-        frame,
-        message,
-        (px1, min(frame.shape[0] - 15, py2 + 25)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        review_state.color,
-        2,
-    )
-
-
-def _draw_status_panel(
-    frame: Any,
-    person_box: tuple[int, int, int, int],
-    lines: list[str],
-    color: tuple[int, int, int],
-    *,
-    avoid_global_hud: bool = False,
-) -> None:
-    x1, y1, x2, y2 = person_box
-    available_width = max(1, x2 - x1 - 8)
-    line_height = 15
-    panel_height = 5 + line_height * len(lines)
-    panel_top = y1
-    if (
-        avoid_global_hud
-        and x1 < min(frame.shape[1], GLOBAL_HUD_WIDTH)
-        and y1 < GLOBAL_HUD_MAX_HEIGHT
-    ):
-        panel_top = min(
-            GLOBAL_HUD_MAX_HEIGHT,
-            max(y1, y2 - panel_height),
-        )
-    panel_bottom = min(y2, panel_top + panel_height)
-    cv2.rectangle(
-        frame,
-        (x1, panel_top),
-        (x2, panel_bottom),
-        color,
-        cv2.FILLED,
-    )
-    for index, text in enumerate(lines):
-        preferred_scale = 0.48 if index == 0 else 0.40
-        text_width = cv2.getTextSize(
-            text,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            preferred_scale,
-            1,
-        )[0][0]
-        scale = (
-            preferred_scale
-            if text_width <= available_width
-            else preferred_scale * available_width / max(1, text_width)
-        )
-        cv2.putText(
-            frame,
-            text,
-            (x1 + 4, panel_top + 13 + line_height * index),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            scale,
-            (255, 255, 255),
-            1,
-        )
-
-
-def _draw_identity_overlay(
-    annotated: Any,
-    identity_overlay: IdentityOverlay,
-    review_color: tuple[int, int, int],
-) -> None:
-    _draw_label_box(
-        annotated,
-        identity_overlay.face_box,
-        identity_overlay.label_text,
-        review_color,
-    )
-
-
-def _draw_label_box(
-    frame: Any,
-    box: tuple[int, int, int, int],
-    label_text: str,
-    color: tuple[int, int, int],
-) -> None:
-    x1, y1, x2, y2 = box
-    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-    frame_height, frame_width = frame.shape[:2]
-    preferred_scale = 0.6
-    thickness = 1
-    text_width, text_height = cv2.getTextSize(
-        label_text,
-        cv2.FONT_HERSHEY_DUPLEX,
-        preferred_scale,
-        thickness,
-    )[0]
-    max_width = max(80, frame_width - 12)
-    scale = (
-        preferred_scale
-        if text_width + 12 <= max_width
-        else preferred_scale * max_width / max(1, text_width + 12)
-    )
-    text_width, text_height = cv2.getTextSize(
-        label_text,
-        cv2.FONT_HERSHEY_DUPLEX,
-        scale,
-        thickness,
-    )[0]
-    label_width = min(frame_width, text_width + 12)
-    label_height = max(24, text_height + 14)
-    label_x1 = min(max(0, x1), max(0, frame_width - label_width))
-    label_y1 = y2 - label_height
-    if label_y1 < 0:
-        label_y1 = min(max(0, y1), max(0, frame_height - label_height))
-    label_x2 = label_x1 + label_width
-    label_y2 = min(frame_height, label_y1 + label_height)
-    cv2.rectangle(frame, (label_x1, label_y1), (label_x2, label_y2), color, cv2.FILLED)
-    cv2.putText(
-        frame,
-        label_text,
-        (label_x1 + 6, label_y2 - 8),
-        cv2.FONT_HERSHEY_DUPLEX,
-        scale,
-        (255, 255, 255),
-        thickness,
-    )
-
-
-def _draw_global_hud(
-    frame: Any,
-    fps: float,
-    person_count: int,
-    identity_enabled: bool,
-    recent_events: tuple[str, ...],
-    demo_override_active: bool,
-) -> None:
-    lines = [
-        f"FPS {fps:4.1f} | people {person_count} | identity {'ON' if identity_enabled else 'OFF'}"
-    ]
-    lines.extend(recent_events[-2:])
-    panel_width = min(frame.shape[1], GLOBAL_HUD_WIDTH)
-    panel_height = 24 + 18 * (len(lines) - 1)
-    cv2.rectangle(frame, (0, 0), (panel_width, panel_height), (25, 25, 25), cv2.FILLED)
-    for index, line in enumerate(lines):
-        cv2.putText(
-            frame,
-            line,
-            (8, 17 + index * 18),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.46,
-            (255, 255, 255),
-            1,
-        )
-    if demo_override_active:
-        text = "DEMO OVERRIDE ACTIVE"
-        text_width = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, 0.7, 2)[0][0]
-        x1 = max(0, frame.shape[1] - text_width - 24)
-        cv2.rectangle(frame, (x1, 0), (frame.shape[1], 32), HIGH_COLOR, cv2.FILLED)
-        cv2.putText(
-            frame,
-            text,
-            (x1 + 8, 23),
-            cv2.FONT_HERSHEY_DUPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-        )
 
 
 if __name__ == "__main__":

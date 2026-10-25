@@ -43,6 +43,7 @@ py-modules = [
     "main",
     "media_export",
     "model_manager",
+    "overlays",
     "pose",
     "review",
     "validation",

@@ -20,6 +20,9 @@ See [tracking and temporal attribution](docs/tracking-attribution.md) for
 ByteTrack thresholds, conservative identity handling, body-scale wave detection,
 JSONL lifecycle replay, and the limits of synthetic regression validation.
 
+See [visualization overlays](docs/visualization-overlays.md) for display controls,
+tracking IDs, motion trails, synthetic sample generation, and rendering measurements.
+
 <img width="1069" height="598" alt="image" src="https://github.com/user-attachments/assets/98c651a0-158e-46c2-81f4-dbaf38517503" />
 
 ## Project Overview

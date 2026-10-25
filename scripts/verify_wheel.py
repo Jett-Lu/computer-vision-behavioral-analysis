@@ -95,6 +95,8 @@ assert settings.project_root == Path(os.environ['MONITOR_HOME'])
 assert settings.emotion_face_model_path.is_file()
 assert settings.emotion_face_model_path.stat().st_size > 100_000
 import detection
+import overlays
+assert Path(overlays.__file__).is_relative_to(sys.prefix)
 from pose import TRACKER_CONFIG_PATH
 assert TRACKER_CONFIG_PATH.is_file()
 assert TRACKER_CONFIG_PATH.is_relative_to(sys.prefix)
