@@ -2,7 +2,7 @@ name: Cross-platform checks
 
 on:
   push:
-    branches: [main, "codex/**"]
+    branches: ["**"]
   pull_request:
 
 jobs:

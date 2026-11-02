@@ -1,6 +1,6 @@
 # Phase 5 reproducibility implementation plan
 
-Implement the approved Phase 5 scope from `27ded0813a804fb01539f84102e7ac18dff52ec9` on `codex/phase-5-ml-reproducibility` only. Reuse the clean checkout and existing experiment modules; do not change live inference, HMDB51 fold assignment, tracking, privacy, events or overlays.
+Implement the approved Phase 5 scope from `27ded0813a804fb01539f84102e7ac18dff52ec9` on its dedicated branch only. Reuse the clean checkout and existing experiment modules; do not change live inference, HMDB51 fold assignment, tracking, privacy, events or overlays.
 
 1. Test then implement strict source/cache provenance validation, cross-partition byte-content duplicate detection, extraction configuration/weights/dependency fingerprints, and manifest-bound cache hashes. Preserve valid caches. Legacy unverified caches must be regenerated before new experiments; historical files remain readable for auditing.
 2. Test then isolate Python/NumPy/Torch RNG and deterministic settings around each classifier run, using stable per-model seeds. Record full training options and provenance in checkpoints. Protect existing checkpoints/reports against accidental overwrite.

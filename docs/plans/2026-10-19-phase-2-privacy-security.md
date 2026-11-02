@@ -4,7 +4,7 @@
 
 **Architecture:** Extend existing data-policy helpers and reuse them at managed write boundaries. Keep the current pipeline and recognition defaults; gate optional model initialization and reporting independently.
 
-**Constraints:** Work only on codex/phase-2-privacy-security. No merge, Phase 3, weakened static checks, or weakened retention/ACL protections. Behavioral output remains an unvalidated demonstration.
+**Constraints:** Work only on the dedicated Phase 2 branch. No merge, Phase 3, weakened static checks, or weakened retention/ACL protections. Behavioral output remains an unvalidated demonstration.
 
 - [x] Reproduce diagnostics permission/probe and event hardlink defects with tests, then add secure append and atomic-output helpers in data_policy.py.
 - [x] Apply helpers to exports, enrollment, logs, models, expression caches, validation reports, and benchmark outputs. Preserve temporary suffixes for codecs and existing output on failure.

@@ -1,6 +1,6 @@
 # Phase 4 overlay implementation plan
 
-**Goal:** Implement the user's approved Phase 4 scope on `codex/phase-4-visualization-overlays`, based on `60e25e0`, preserving inference, privacy, attribution and JSONL behavior.
+**Goal:** Implement the approved Phase 4 scope on its dedicated branch, based on `60e25e0`, preserving inference, privacy, attribution and JSONL behavior.
 
 **Architecture:** Keep MonitoringProcessor as the owner of model execution and per-person state. A small OpenCV renderer consumes completed snapshots and filtered poses after event generation. Configuration and trail history have no influence on predictions. No new models, dashboard, or dependencies.
 
