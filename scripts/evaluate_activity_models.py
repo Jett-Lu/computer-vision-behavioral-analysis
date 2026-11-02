@@ -36,6 +36,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--latency-samples", type=int, default=20)
+    parser.add_argument("--latency-warmup", type=int, default=3)
+    parser.add_argument("--latency-repeats", type=int, default=10)
+    parser.add_argument(
+        "--include-source-latency",
+        action="store_true",
+        help="Also time source decoding, pose extraction and the full classification path; requires matching local pose assets/configuration.",
+    )
     parser.add_argument("--overwrite-features", action="store_true")
     return parser.parse_args()
 
@@ -49,6 +56,9 @@ def main() -> None:
         args.results_dir,
         device_name=args.device,
         latency_samples=args.latency_samples,
+        latency_warmup=args.latency_warmup,
+        latency_repeats=args.latency_repeats,
+        include_source_latency=args.include_source_latency,
         overwrite_features=args.overwrite_features,
     )
     print(f"Results: {args.results_dir.resolve()}")

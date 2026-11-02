@@ -52,6 +52,17 @@ class CacheSamplingTest(unittest.TestCase):
         self.assertEqual(np.load(self.root / "cnn" / "clip.npy").shape, (3,))
 
     def setUp(self):
+        contract = patch(
+            "activity_recognition.preprocessing.pose_extraction_provenance",
+            return_value={"fixture": "mock-pose"},
+        )
+        contract.start()
+        self.addCleanup(contract.stop)
+        weights = patch(
+            "activity_recognition.train.backbone_weight_fingerprint", return_value="mock-backbone"
+        )
+        weights.start()
+        self.addCleanup(weights.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)

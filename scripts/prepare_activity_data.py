@@ -16,6 +16,8 @@ from activity_recognition.dataset import (
     write_manifest,
 )
 from activity_recognition.preprocessing import cache_activity_samples
+from activity_recognition.provenance import pose_extraction_provenance, annotation_provenance
+from activity_recognition.labels import HMDB51_TO_ACTIVITY
 from activity_recognition.sampling import DEFAULT_SAMPLING_INTERVAL_SECONDS
 
 
@@ -69,6 +71,9 @@ def main() -> None:
             seed=args.seed,
         )
         annotations_root = args.metadata_train.parent
+        split_definition = annotation_provenance(
+            [args.metadata_train, args.metadata_test], "mirror-metadata-fold-1"
+        )
     else:
         if args.annotations_root is None:
             raise SystemExit("Provide --annotations-root or both metadata CSV arguments")
@@ -81,10 +86,19 @@ def main() -> None:
             seed=args.seed,
         )
         annotations_root = args.annotations_root
+        split_definition = annotation_provenance(
+            [
+                annotations_root / f"{label}_test_split{args.fold}.txt"
+                for label in HMDB51_TO_ACTIVITY
+            ],
+            "official-split-files",
+        )
     manifest_path = cache_dir / "manifest.json"
+    extraction = pose_extraction_provenance()
     counts = cache_activity_samples(
         samples,
         frames_per_sample=args.frames,
+        extraction_provenance=extraction,
         overwrite=args.overwrite,
         sampling_interval_seconds=args.sampling_interval_seconds,
     )
@@ -100,7 +114,9 @@ def main() -> None:
         validation_fraction=args.validation_fraction,
         seed=args.seed,
         frames_per_sample=args.frames,
+        extraction_provenance=extraction,
         sampling_interval_seconds=args.sampling_interval_seconds,
+        split_definition=split_definition,
     )
     print(f"Manifest: {manifest_path}")
 

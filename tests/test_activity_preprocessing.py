@@ -26,6 +26,14 @@ from activity_recognition.preprocessing import (
 
 
 class ActivityPreprocessingTest(unittest.TestCase):
+    def setUp(self):
+        contract = patch(
+            "activity_recognition.preprocessing.pose_extraction_provenance",
+            return_value={"fixture": "mock-pose"},
+        )
+        contract.start()
+        self.addCleanup(contract.stop)
+
     def test_pose_is_normalized_relative_to_person_box(self) -> None:
         features = normalize_pose(
             {0: (0.30, 0.40), 1: (0.50, 0.70)},

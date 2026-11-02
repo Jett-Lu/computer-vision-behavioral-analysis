@@ -552,6 +552,12 @@ The activity recognizer:
 
 ## Activity Benchmark
 
+See [ML reproducibility and evaluation](docs/ml-reproducibility.md) for cache
+provenance, migration, independent metric reconstruction, latency boundaries and
+the future experiment plan. New experiments reject unverified legacy caches and
+checkpoints; use fresh run directories to preserve historical artifacts. Phase 5
+did not rerun the historical benchmark because its data/checkpoints were unavailable.
+
 Prepare the HMDB51 data:
 
 ```powershell
@@ -588,6 +594,8 @@ The generated files include:
 * `advanced_confusion_matrix.png`
 * `training_curves.png`
 * `run_manifest.json`
+* `reconstructed_metrics.json`
+* `latency.csv` (separate timing boundaries, mean/median/p95)
 
 ## Validation
 

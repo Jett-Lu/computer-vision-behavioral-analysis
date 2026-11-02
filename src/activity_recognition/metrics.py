@@ -207,3 +207,28 @@ def write_predictions_csv(path: Path, rows: Sequence[dict]) -> None:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_latency_csv(path: Path, results: dict[str, dict]) -> None:
+    """One row per measured boundary; unavailable stages are never reported as zero."""
+    with (
+        atomic_output(path) as temporary,
+        temporary.open("w", newline="", encoding="utf-8") as stream,
+    ):
+        writer = csv.DictWriter(
+            stream, fieldnames=["model", "boundary", "count", "mean_ms", "median_ms", "p95_ms"]
+        )
+        writer.writeheader()
+        for model, metrics in results.items():
+            for boundary, stats in metrics["latency_breakdown"].items():
+                if isinstance(stats, dict) and "measurements_ms" in stats:
+                    writer.writerow(
+                        {
+                            "model": model,
+                            "boundary": boundary,
+                            **{
+                                key: stats[key]
+                                for key in ("count", "mean_ms", "median_ms", "p95_ms")
+                            },
+                        }
+                    )

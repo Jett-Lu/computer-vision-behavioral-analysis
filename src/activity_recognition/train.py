@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
-from data_policy import ensure_private_directory, atomic_output
+from data_policy import ensure_private_directory, atomic_output, safe_file_path
 from time import perf_counter
 from typing import Any, Iterable
 
@@ -24,6 +24,14 @@ from activity_recognition.dataset import (
     samples_for_split,
 )
 from activity_recognition.labels import ACTIVITY_LABELS, LABEL_TO_INDEX
+from activity_recognition.provenance import (
+    reproducible_training,
+    model_seed,
+    environment,
+    require_fresh_outputs,
+    backbone_weight_fingerprint,
+    file_hash,
+)
 from activity_recognition.metrics import (
     classification_metrics,
     confusion_matrix,
@@ -91,7 +99,17 @@ def cache_backbone_features(
     model_feature_root = feature_root / model_name
     ensure_private_directory(model_feature_root)
     sample_list = list(samples)
-    provenance = {sample.key: _feature_provenance(sample, model_name) for sample in sample_list}
+    extractor = None
+    try:
+        backbone_weight_fingerprint(model_name)
+    except FileNotFoundError:
+        extractor = (
+            build_mobilenet_extractor() if model_name == "cnn" else build_s3d_extractor()
+        ).to(device)
+    contract = feature_contract(model_name)
+    provenance = {
+        sample.key: _feature_provenance(sample, model_name, contract) for sample in sample_list
+    }
     pending_samples = [
         sample
         for sample in sample_list
@@ -103,9 +121,10 @@ def cache_backbone_features(
     if not pending_samples:
         return
 
-    extractor = (build_mobilenet_extractor() if model_name == "cnn" else build_s3d_extractor()).to(
-        device
-    )
+    if extractor is None:
+        extractor = (
+            build_mobilenet_extractor() if model_name == "cnn" else build_s3d_extractor()
+        ).to(device)
     with torch.inference_mode():
         for position, sample in enumerate(pending_samples, start=1):
             output_path = model_feature_root / f"{sample.key}.npy"
@@ -132,13 +151,16 @@ def cache_backbone_features(
             print(f"[{position}/{len(pending_samples)}] cached {model_name} features")
 
 
-def _feature_provenance(sample: ActivitySample, model_name: str) -> dict[str, Any]:
+def feature_contract(model_name: str) -> dict[str, Any]:
     return {
-        "version": 1,
-        "source_sha256": file_fingerprint(Path(sample.cache_path)),
+        "version": 2,
+        "weights_sha256": backbone_weight_fingerprint(model_name),
         "extractor": "mobilenet_v2.IMAGENET1K_V2" if model_name == "cnn" else "s3d.KINETICS400_V1",
         "torchvision_version": version("torchvision"),
         "torch_version": str(torch.__version__),
+        "implementation_sha256": file_fingerprint(Path(__file__).with_name("models.py")),
+        "preprocessing_sha256": file_fingerprint(Path(__file__).with_name("preprocessing.py")),
+        "feature_extraction_sha256": file_fingerprint(Path(__file__)),
         "preprocessing": "rgb-uint8-normalize-v1",
         "mean": list(IMAGENET_MEAN if model_name == "cnn" else S3D_MEAN),
         "std": list(IMAGENET_STD if model_name == "cnn" else S3D_STD),
@@ -146,16 +168,28 @@ def _feature_provenance(sample: ActivitySample, model_name: str) -> dict[str, An
     }
 
 
+def _feature_provenance(
+    sample: ActivitySample, model_name: str, contract: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    return {
+        **(contract if contract is not None else feature_contract(model_name)),
+        "sample_key": sample.key,
+        "split": sample.split,
+        "label": sample.label_index,
+        "source_sha256": file_fingerprint(Path(sample.cache_path)),
+    }
+
+
 def _valid_feature_cache(path: Path, expected: dict[str, Any]) -> bool:
     try:
-        metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        metadata = json.loads(safe_file_path(path.with_suffix(".json")).read_text(encoding="utf-8"))
         if not isinstance(metadata, dict):
             return False
         if any(metadata.get(key) != value for key, value in expected.items()):
             return False
         if metadata.get("vector_sha256") != file_fingerprint(path):
             return False
-        vector = np.load(path, allow_pickle=False)
+        vector = np.load(safe_file_path(path), allow_pickle=False)
         return (
             vector.ndim == 1
             and vector.size > 0
@@ -184,7 +218,11 @@ def load_model_features(
             f"Activity {model_name} feature missing: {missing_paths[0]}. "
             "Run train_activity_models.py to build the frozen feature cache."
         )
-    vectors = [np.load(path, allow_pickle=False) for path in feature_paths]
+    contract = feature_contract(model_name)
+    for sample, path in zip(samples, feature_paths):
+        if not _valid_feature_cache(path, _feature_provenance(sample, model_name, contract)):
+            raise ValueError(f"Invalid {model_name} feature provenance: {path}")
+    vectors = [np.load(safe_file_path(path), allow_pickle=False) for path in feature_paths]
     labels = np.asarray([sample.label_index for sample in samples], dtype=np.int64)
     return np.stack(vectors).astype(np.float32), labels
 
@@ -209,9 +247,10 @@ def train_all_models(
     if not train_samples or not validation_samples:
         raise ValueError("Manifest must contain train and validation samples")
     development_samples = [*train_samples, *validation_samples]
-    validate_cached_samples(development_samples, metadata)
+    validate_cached_samples(samples, metadata)
     device = resolve_device(device_name)
-    set_reproducible_seed(seed)
+    require_fresh_outputs(model_root, [f"{name}.pt" for name in MODEL_NAMES])
+    require_fresh_outputs(results_root, ["training_curves.png"])
     ensure_private_directory(model_root)
     ensure_private_directory(feature_root)
 
@@ -224,6 +263,11 @@ def train_all_models(
             overwrite=overwrite_features,
         )
 
+    metadata = {
+        **metadata,
+        "manifest_sha256": file_hash(manifest_path),
+        "backbone_contracts": {name: feature_contract(name) for name in ("cnn", "advanced")},
+    }
     results: dict[str, TrainingResult] = {}
     histories: dict[str, dict] = {}
     for model_name in MODEL_NAMES:
@@ -258,6 +302,7 @@ def train_all_models(
     return results
 
 
+@reproducible_training
 def train_classifier(
     model_name: str,
     training_features: np.ndarray,
@@ -276,6 +321,7 @@ def train_classifier(
 ) -> TrainingResult:
     if epochs < 1:
         raise ValueError("epochs must be positive")
+    require_fresh_outputs(checkpoint_path.parent, [checkpoint_path.name])
     if patience < 1:
         raise ValueError("patience must be positive")
     if batch_size < 1:
@@ -392,6 +438,18 @@ def train_classifier(
                 "best_validation_macro_f1": best_score,
                 "epochs_completed": len(history["train_loss"]),
                 "seed": seed,
+                "model_seed": model_seed(seed, model_name),
+                "training_config": {
+                    "epochs": epochs,
+                    "patience": patience,
+                    "batch_size": batch_size,
+                    "learning_rate": learning_rate,
+                    "optimizer": "Adam",
+                    "loss": "CrossEntropyLoss",
+                    "selection": "validation macro F1, loss tie-break",
+                },
+                "environment": environment(device),
+                "dataset_provenance": manifest_metadata or {},
                 "labels": list(ACTIVITY_LABELS),
                 "label_to_index": dict(LABEL_TO_INDEX),
                 "frames_per_sample": int((manifest_metadata or {}).get("frames_per_sample", 16)),

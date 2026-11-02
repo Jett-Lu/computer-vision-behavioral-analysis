@@ -48,7 +48,7 @@ def build_mobilenet_extractor(pretrained: bool = True) -> nn.Module:
     """Return frozen MobileNetV2 features with the ImageNet head removed."""
     from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
 
-    weights = MobileNet_V2_Weights.DEFAULT if pretrained else None
+    weights = MobileNet_V2_Weights.IMAGENET1K_V2 if pretrained else None
     model = mobilenet_v2(weights=weights)
     model.classifier = nn.Sequential()
     model.eval()
@@ -61,7 +61,7 @@ def build_s3d_extractor(pretrained: bool = True) -> nn.Module:
     """Return frozen S3D features with the Kinetics-400 head removed."""
     from torchvision.models.video import S3D_Weights, s3d
 
-    weights = S3D_Weights.DEFAULT if pretrained else None
+    weights = S3D_Weights.KINETICS400_V1 if pretrained else None
     model = s3d(weights=weights)
     model.classifier = nn.Sequential()
     model.eval()

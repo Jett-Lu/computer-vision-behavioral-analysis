@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from pathlib import Path
-from data_policy import ensure_private_directory, atomic_output
+from data_policy import ensure_private_directory, atomic_output, safe_file_path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Iterable
 from zipfile import BadZipFile
@@ -13,13 +13,20 @@ from zipfile import BadZipFile
 import cv2
 import numpy as np
 
-from activity_recognition.dataset import ActivitySample
+from activity_recognition.dataset import ActivitySample, _validate_manifest_samples
+from activity_recognition.provenance import (
+    array_hash,
+    source_records,
+    dataset_provenance,
+    pose_extraction_provenance,
+)
 from activity_recognition.sampling import (
     DEFAULT_SAMPLING_INTERVAL_SECONDS,
     SAMPLING_VERSION,
     validate_sampling_interval,
 )
 from camera import CaptureClock
+from config import AppConfig
 
 if TYPE_CHECKING:
     import torch
@@ -127,15 +134,21 @@ def sample_video_frames(
 def file_fingerprint(path: Path) -> str:
     """Hash source content without loading a video or NPZ entirely into memory."""
     digest = sha256()
-    with path.open("rb") as stream:
+    with safe_file_path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
-def _sample_metadata(sample: ActivitySample, frames: int, interval: float) -> dict[str, Any]:
+def _sample_metadata(
+    sample: ActivitySample, frames: int, interval: float, extraction: dict[str, Any]
+) -> dict[str, Any]:
     return {
-        "version": 2,
+        "version": 3,
+        "key": sample.key,
+        "class": sample.hmdb51_class,
+        "label_name": sample.label,
+        "extraction": extraction,
         "source": str(Path(sample.video_path).resolve()),
         "source_sha256": file_fingerprint(Path(sample.video_path)),
         "frames_per_sample": frames,
@@ -150,7 +163,7 @@ def _sample_metadata(sample: ActivitySample, frames: int, interval: float) -> di
 
 def _valid_sample_cache(path: Path, expected: dict[str, Any]) -> bool:
     try:
-        with np.load(path, allow_pickle=False) as payload:
+        with np.load(safe_file_path(path), allow_pickle=False) as payload:
             if json.loads(str(payload["metadata"])) != expected:
                 return False
             count = expected["frames_per_sample"]
@@ -160,6 +173,9 @@ def _valid_sample_cache(path: Path, expected: dict[str, Any]) -> bool:
                 and payload["pose"].dtype == np.float32
                 and payload["crops"].dtype == np.uint8
                 and bool(np.isfinite(payload["pose"]).all())
+                and bool(((payload["pose"] >= 0) & (payload["pose"] <= 1)).all())
+                and str(payload["pose_sha256"]) == array_hash(payload["pose"])
+                and str(payload["crops_sha256"]) == array_hash(payload["crops"])
                 and int(payload["label"]) == expected["label"]
                 and str(payload["split"]) == expected["split"]
                 and str(payload["source"]) == expected["source"]
@@ -169,32 +185,32 @@ def _valid_sample_cache(path: Path, expected: dict[str, Any]) -> bool:
 
 
 def validate_cached_samples(samples: Iterable[ActivitySample], metadata: dict[str, Any]) -> None:
-    """Reject incompatible arrays before building backbones or training heads."""
-    count = metadata["frames_per_sample"]
-    for sample in samples:
-        try:
-            with np.load(sample.cache_path, allow_pickle=False) as payload:
-                if payload["pose"].shape != (count, KEYPOINT_COUNT, 3) or payload[
-                    "crops"
-                ].shape != (count, DEFAULT_CROP_SIZE, DEFAULT_CROP_SIZE, 3):
-                    raise ValueError("cache frame count or array shape does not match manifest")
-                if int(payload["label"]) != sample.label_index:
-                    raise ValueError("cache label does not match manifest")
-                interval = metadata.get("sampling_interval_seconds")
-                if interval is not None:
-                    cached = json.loads(str(payload["metadata"]))
-                    if not isinstance(cached, dict):
-                        raise ValueError("cache metadata must be an object")
-                    if (
-                        cached.get("sampling_interval_seconds") != interval
-                        or cached.get("sampling_version") != SAMPLING_VERSION
-                    ):
-                        raise ValueError("cache sampling contract does not match manifest")
-        except (OSError, ValueError, KeyError, TypeError, EOFError, BadZipFile) as exc:
-            raise ValueError(
-                f"Invalid activity cache {sample.cache_path}: {exc}. "
-                "Run prepare_activity_data.py again."
-            ) from exc
+    """Require manifest-bound artifacts and audit all partitions before experiments."""
+    sample_list = list(samples)
+    _validate_manifest_samples(sample_list)
+    try:
+        current = dataset_provenance(sample_list)
+        registry = metadata.get("cache_provenance")
+        extraction = metadata.get("extraction")
+        if not isinstance(registry, dict) or not isinstance(extraction, dict):
+            raise ValueError("missing provenance; regenerate legacy manifest/cache")
+        if registry.keys() != current.keys():
+            raise ValueError("partition membership differs from provenance registry")
+        for sample in sample_list:
+            if registry.get(sample.key) != current[sample.key]:
+                raise ValueError(f"source/cache/partition provenance mismatch: {sample.key}")
+            expected = _sample_metadata(
+                sample,
+                metadata["frames_per_sample"],
+                validate_sampling_interval(metadata["sampling_interval_seconds"]),
+                extraction,
+            )
+            if not _valid_sample_cache(Path(sample.cache_path), expected):
+                raise ValueError(f"invalid arrays or extraction provenance: {sample.key}")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(
+            f"Invalid activity cache: {exc}. Run prepare_activity_data.py again."
+        ) from exc
 
 
 def cache_activity_samples(
@@ -203,15 +219,22 @@ def cache_activity_samples(
     frames_per_sample: int = DEFAULT_FRAMES_PER_SAMPLE,
     overwrite: bool = False,
     pose_analyzer: Any | None = None,
+    extraction_provenance: dict[str, Any] | None = None,
     sampling_interval_seconds: float = DEFAULT_SAMPLING_INTERVAL_SECONDS,
 ) -> dict[str, int]:
     """Run YOLO pose once and cache normalized poses plus person crops."""
     sample_list = list(samples)
+    _validate_manifest_samples(sample_list)
+    source_records(sample_list)
+    extraction = (
+        extraction_provenance if extraction_provenance is not None else pose_extraction_provenance()
+    )
     if frames_per_sample < 1:
         raise ValueError("frames_per_sample must be positive")
     interval = validate_sampling_interval(sampling_interval_seconds)
     metadata_by_key = {
-        sample.key: _sample_metadata(sample, frames_per_sample, interval) for sample in sample_list
+        sample.key: _sample_metadata(sample, frames_per_sample, interval, extraction)
+        for sample in sample_list
     }
     pending_samples = [
         sample
@@ -226,7 +249,8 @@ def cache_activity_samples(
     if pose_analyzer is None:
         from pose import PoseAnalyzer
 
-        pose_analyzer = PoseAnalyzer()
+        config = AppConfig.from_env()
+        pose_analyzer = PoseAnalyzer(config=config, model_path=config.pose_model_path)
     completed = failed = 0
     for position, sample in enumerate(pending_samples, start=1):
         cache_path = Path(sample.cache_path)
@@ -254,11 +278,14 @@ def cache_activity_samples(
                 detected_count += int(selected is not None)
                 poses.append(normalize_pose(landmarks, box, frame.shape))
                 crops.append(crop_person(frame, box))
+            pose_array, crop_array = np.stack(poses), np.stack(crops)
             with atomic_output(cache_path) as temporary_path, temporary_path.open("wb") as stream:
                 np.savez_compressed(
                     stream,
-                    pose=np.stack(poses),
-                    crops=np.stack(crops),
+                    pose=pose_array,
+                    crops=crop_array,
+                    pose_sha256=np.array(array_hash(pose_array)),
+                    crops_sha256=np.array(array_hash(crop_array)),
                     label=np.int64(sample.label_index),
                     split=np.array(sample.split),
                     source=np.array(str(Path(sample.video_path).resolve())),
@@ -286,7 +313,7 @@ def load_cached_arrays(
             raise FileNotFoundError(
                 f"Activity cache missing: {cache_path}. Run prepare_activity_data.py."
             )
-        with np.load(cache_path, allow_pickle=False) as payload:
+        with np.load(safe_file_path(cache_path), allow_pickle=False) as payload:
             values.append(np.asarray(payload[field_name]))
             labels.append(int(payload["label"]))
     return np.stack(values), np.asarray(labels, dtype=np.int64)

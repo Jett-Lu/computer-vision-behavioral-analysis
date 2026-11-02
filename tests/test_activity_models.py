@@ -26,6 +26,13 @@ from activity_recognition.train import cache_backbone_features
 
 
 class ActivityModelTest(unittest.TestCase):
+    def setUp(self):
+        weights = patch(
+            "activity_recognition.train.backbone_weight_fingerprint", return_value="mock-backbone"
+        )
+        weights.start()
+        self.addCleanup(weights.stop)
+
     def test_mlp_returns_four_logits(self) -> None:
         model = ActivityClassifier(input_dim=16 * 17 * 3, hidden_dim=32)
 

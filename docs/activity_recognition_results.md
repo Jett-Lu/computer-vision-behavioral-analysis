@@ -1,5 +1,10 @@
 # Activity Recognition Results
 
+Historical report, preserved without updating its figures. Phase 5 did not have
+the original videos, checkpoints or prediction files to reconstruct this run.
+Current sampling and evidence requirements differ; see
+[ML reproducibility and evaluation](ml-reproducibility.md) before making comparisons.
+
 ## Objective
 
 This benchmark compares three compact approaches for recognizing walking,

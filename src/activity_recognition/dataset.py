@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import shutil
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
-from data_policy import ensure_private_directory, atomic_output, _safe_path
+from data_policy import ensure_private_directory, atomic_output, _safe_path, safe_file_path
 from typing import Any, Iterable
 from urllib.error import URLError
 from urllib.parse import quote
@@ -221,6 +222,8 @@ def write_manifest(
     seed: int,
     frames_per_sample: int,
     sampling_interval_seconds: float = DEFAULT_SAMPLING_INTERVAL_SECONDS,
+    extraction_provenance: dict[str, Any] | None = None,
+    split_definition: dict[str, Any] | None = None,
 ) -> None:
     ensure_private_directory(path.parent)
     payload = {
@@ -237,12 +240,19 @@ def write_manifest(
         "label_to_index": dict(LABEL_TO_INDEX),
         "samples": [asdict(sample) for sample in samples],
     }
+    if extraction_provenance is not None:
+        from activity_recognition.provenance import dataset_provenance
+
+        payload["extraction"] = extraction_provenance
+        payload["cache_provenance"] = dataset_provenance(samples)
+    if split_definition is not None:
+        payload["split_definition"] = split_definition
     with atomic_output(path) as temporary_path:
         temporary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def load_manifest(path: Path) -> tuple[dict[str, Any], list[ActivitySample]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(safe_file_path(path).read_text(encoding="utf-8"))
     if payload.get("version") != MANIFEST_VERSION:
         raise ValueError("Unsupported activity manifest version")
     labels = payload.get("labels")
@@ -340,6 +350,8 @@ def _validate_manifest_samples(samples: list[ActivitySample]) -> None:
             raise ValueError("Activity manifest sample text fields must be strings")
         if sample.split not in valid_splits:
             raise ValueError(f"Activity sample {sample.key} has invalid split: {sample.split}")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", sample.key):
+            raise ValueError("Activity sample key must be a safe filename identifier")
         expected_label = normalize_hmdb51_label(sample.hmdb51_class)
         if sample.label != expected_label:
             raise ValueError(
