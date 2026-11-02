@@ -30,3 +30,8 @@ these timings must not be interpreted as warmed-predictor-only inference.
 Actual dataset accuracy, historical metric reconstruction, physical camera tests
 and GPU reproducibility remain unverified without the missing inputs/hardware;
 synthetic tests cannot substitute for those experiments.
+
+The first CI run exposed upstream dependency drift: Ultralytics 8.4.198 removed
+the transitive PyYAML dependency. The existing ByteTrack regression now uses
+Ultralytics' own YAML configuration loader, retaining every tracking assertion
+without introducing a new production dependency.

@@ -161,10 +161,10 @@ class TrackerConfigurationTest(unittest.TestCase):
         from ultralytics.trackers.byte_tracker import BYTETracker
         from ultralytics.engine.results import Boxes
         from types import SimpleNamespace
-        import yaml
+        from ultralytics.utils import YAML
         from pose import TRACKER_CONFIG_PATH
 
-        tracker = BYTETracker(SimpleNamespace(**yaml.safe_load(TRACKER_CONFIG_PATH.read_text())))
+        tracker = BYTETracker(SimpleNamespace(**YAML.load(TRACKER_CONFIG_PATH)))
 
         def update(rows):
             return tracker.update(
